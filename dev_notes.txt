@@ -254,3 +254,7 @@ v0.5 (2026-08-25)
   (modarchive batch), MIDI volume via MusicPlayer+AUSampler if the
   inert slider matters, MIDI resume-from-position untested by ear,
   Opus-in-Ogg still undecodable.
+
+=== 2026-09-14 — uploaded to GitHub (private) ===
+Repo: https://github.com/Kafaferanterenous/audio-commander (main). One initial commit;
+build artifacts (build/, dist/, *.app, **/target as applicable) gitignored.
