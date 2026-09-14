@@ -1,0 +1,367 @@
+import Foundation
+import SwiftUI
+
+enum Language: String, CaseIterable, Identifiable {
+    case english, polish, italian, chinese
+    var id: String { rawValue }
+
+    var nativeName: String {
+        switch self {
+        case .english: return "English"
+        case .polish: return "Polski"
+        case .italian: return "Italiano"
+        case .chinese: return "中文（简体）"
+        }
+    }
+}
+
+enum AppThemeKind: String, CaseIterable, Identifiable {
+    case dark, light, pastel, blue
+    var id: String { rawValue }
+
+    var localizedNameKey: String {
+        switch self {
+        case .dark: return "themeDark"
+        case .light: return "themeLight"
+        case .pastel: return "themePastel"
+        case .blue: return "themeBlue"
+        }
+    }
+}
+
+struct ThemePalette {
+    let bgTop: Color
+    let bgBottom: Color
+    let cardOpacityFill: Color
+    let divider: Color
+    let accent: Color
+    let folderColor: Color
+    let colorScheme: ColorScheme
+
+    static func palette(for kind: AppThemeKind) -> ThemePalette {
+        switch kind {
+        case .dark:
+            return ThemePalette(
+                bgTop: Color(red: 0.085, green: 0.075, blue: 0.13),
+                bgBottom: Color(red: 0.12, green: 0.11, blue: 0.19),
+                cardOpacityFill: Color.white.opacity(0.04),
+                divider: Color.white.opacity(0.10),
+                accent: Color(red: 0.78, green: 0.66, blue: 0.98),
+                folderColor: Color(red: 0.55, green: 0.62, blue: 0.95),
+                colorScheme: .dark)
+        case .light:
+            return ThemePalette(
+                bgTop: Color(red: 0.96, green: 0.96, blue: 0.98),
+                bgBottom: Color(red: 0.89, green: 0.90, blue: 0.94),
+                cardOpacityFill: Color.black.opacity(0.03),
+                divider: Color.black.opacity(0.14),
+                accent: Color(red: 0.42, green: 0.31, blue: 0.73),
+                folderColor: Color(red: 0.35, green: 0.47, blue: 0.90),
+                colorScheme: .light)
+        case .pastel:
+            return ThemePalette(
+                bgTop: Color(red: 0.99, green: 0.93, blue: 0.96),
+                bgBottom: Color(red: 0.91, green: 0.88, blue: 0.99),
+                cardOpacityFill: Color.white.opacity(0.50),
+                divider: Color(red: 0.72, green: 0.60, blue: 0.88),
+                accent: Color(red: 0.63, green: 0.42, blue: 0.85),
+                folderColor: Color(red: 0.55, green: 0.68, blue: 0.95),
+                colorScheme: .light)
+        case .blue:
+            return ThemePalette(
+                bgTop: Color(red: 0.035, green: 0.10, blue: 0.21),
+                bgBottom: Color(red: 0.07, green: 0.17, blue: 0.33),
+                cardOpacityFill: Color.white.opacity(0.06),
+                divider: Color.white.opacity(0.16),
+                accent: Color(red: 0.44, green: 0.72, blue: 1.00),
+                folderColor: Color(red: 0.52, green: 0.80, blue: 0.98),
+                colorScheme: .dark)
+        }
+    }
+}
+
+@MainActor
+final class AppSettings: ObservableObject {
+    static let shared = AppSettings()
+
+    @Published var language: Language {
+        didSet { UserDefaults.standard.set(language.rawValue, forKey: "ac_language") }
+    }
+    @Published var theme: AppThemeKind {
+        didSet { UserDefaults.standard.set(theme.rawValue, forKey: "ac_theme") }
+    }
+    @Published var fontScale: Double {
+        didSet { UserDefaults.standard.set(fontScale, forKey: "ac_font_scale") }
+    }
+    @Published private(set) var skins: [SknEntry] = []
+    @Published var selectedSkin: String? {
+        didSet { UserDefaults.standard.set(selectedSkin, forKey: "ac_skn") }
+    }
+    @Published var settingsRequest = 0
+
+    func requestSettings() { settingsRequest += 1 }
+
+    // Imported .skn palettes override the built-in theme while selected.
+    var palette: ThemePalette {
+        if let name = selectedSkin,
+           let entry = skins.first(where: { $0.name == name }) {
+            return entry.palette
+        }
+        return ThemePalette.palette(for: theme)
+    }
+
+    // MARK: Skins (.skn import, Linux-spec)
+
+    private var skinsDir: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return base.appendingPathComponent("AudioCommander/Skins", isDirectory: true)
+    }
+
+    func loadSkinsFromDisk() {
+        let dir = skinsDir
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]))?.filter { $0.pathExtension.lowercased() == "skn" } ?? []
+        var loaded: [SknEntry] = []
+        for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            if let colors = SknParser.load(from: file) {
+                loaded.append(SknEntry(name: file.deletingPathExtension().lastPathComponent,
+                                       palette: SknParser.palette(for: colors)))
+            }
+        }
+        skins = loaded
+        if let selected = selectedSkin, !loaded.contains(where: { $0.name == selected }) {
+            selectedSkin = nil
+        }
+    }
+
+    @discardableResult
+    func importSkin(from url: URL) -> Bool {
+        guard let colors = SknParser.load(from: url) else { return false }
+        let dir = skinsDir
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let target = dir.appendingPathComponent(url.lastPathComponent)
+        do {
+            if FileManager.default.fileExists(atPath: target.path) {
+                try FileManager.default.removeItem(at: target)
+            }
+            try FileManager.default.copyItem(at: url, to: target)
+        } catch {
+            return false
+        }
+        loadSkinsFromDisk()
+        selectedSkin = target.deletingPathExtension().lastPathComponent
+        _ = colors
+        return true
+    }
+
+    func removeSkin(_ name: String) {
+        let target = skinsDir.appendingPathComponent(name + ".skn")
+        try? FileManager.default.removeItem(at: target)
+        loadSkinsFromDisk()
+    }
+
+    init() {
+        let defaults = UserDefaults.standard
+        language = defaults.string(forKey: "ac_language")
+            .flatMap(Language.init(rawValue:)) ?? .english
+        theme = defaults.string(forKey: "ac_theme")
+            .flatMap(AppThemeKind.init(rawValue:)) ?? .dark
+        let stored = defaults.double(forKey: "ac_font_scale")
+        fontScale = stored > 0 ? stored : 1.0
+        selectedSkin = defaults.string(forKey: "ac_skn")
+        loadSkinsFromDisk()
+    }
+
+    func scaled(_ size: CGFloat) -> Font {
+        .system(size: size * fontScale)
+    }
+
+    func t(_ key: String) -> String {
+        Self.string(key, for: language)
+    }
+
+    func tf(_ key: String, _ args: CVarArg...) -> String {
+        String(format: Self.string(key, for: language), arguments: args)
+    }
+
+    private static func string(_ key: String, for lang: Language) -> String {
+        if let s = tables[lang]?[key] { return s }
+        return tables[.english]?[key] ?? key
+    }
+
+    private static let tables: [Language: [String: String]] = [
+        .english: [
+            "left": "Left", "right": "Right",
+            "up": "Up one folder", "refresh": "Refresh",
+            "chooseFolder": "Choose folder…", "recentFolders": "Recent folders",
+            "name": "Name", "size": "Size", "duration": "Duration",
+            "foldersN": "folder(s)", "filesN": "file(s)", "audioN": "audio",
+            "playedLength": "played length %1$@ of %2$@",
+            "select": "Select", "deselect": "Deselect",
+            "sortHelp": "Sort by %@",
+            "seekHelp": "Seek position", "volumeHelp": "Volume",
+            "playAll": "Play all",
+            "playAllHelp": "Play every audio file in this folder, in sorted order",
+            "notAnAudio": "Not an audio file: %@",
+            "cantDecode": "Can't decode \"%@\" — skipping",
+            "noPlayable": "No playable tracks in this folder",
+            "idleHint": "Click an audio file to play — click again to stop",
+            "fromPane": "from %@ pane",
+            "prevHelp": "Previous (restarts current track after 3s)",
+            "nextHelp": "Next",
+            "pauseHelp": "Pause", "resumeHelp": "Play",
+            "copyToOther": "Copy selection to the other pane",
+            "moveToOther": "Move selection to the other pane",
+            "selectFirst": "Select items with the circle checkboxes first",
+            "copiedDone": "Copied %d item(s)",
+            "movedDone": "Moved %d item(s)",
+            "opErrors": ", %d error(s)",
+            "transferring": "Transferring %d of %d…",
+            "renamedConflict": "renamed on conflict",
+            "settings": "Settings", "version": "Version",
+            "fontSize": "Font size", "languageLabel": "Language", "themeLabel": "Theme",
+            "themeDark": "Dark", "themeLight": "Light",
+            "themePastel": "Pastel", "themeBlue": "Blue",
+            "close": "Close",
+            "openCtx": "Open", "finderCtx": "Show in Finder",
+            "stopTip": "Playing — click to stop",
+            "swapPanes": "Swap panes",
+            "trashSel": "Move selection to Trash",
+            "trashedDone": "Trashed %d item(s)",
+            "skinsLabel": "Skins", "importSkin": "Import .skn…",
+            "skinBad": "Invalid .skn file",
+            "noSkins": "No skins imported yet",
+            "removeSkin": "Remove this skin"
+        ],
+        .polish: [
+            "left": "Lewy", "right": "Prawy",
+            "up": "Poziom wyżej", "refresh": "Odśwież",
+            "chooseFolder": "Wybierz folder…", "recentFolders": "Ostatnie foldery",
+            "name": "Nazwa", "size": "Rozmiar", "duration": "Czas",
+            "foldersN": "folder(y)", "filesN": "plik(i)", "audioN": "audio",
+            "playedLength": "łączny czas %1$@ z %2$@",
+            "select": "Zaznacz", "deselect": "Odznacz",
+            "sortHelp": "Sortuj według: %@",
+            "seekHelp": "Pozycja odtwarzania", "volumeHelp": "Głośność",
+            "playAll": "Odtwórz wszystko",
+            "playAllHelp": "Odtwórz wszystkie pliki audio z tego folderu według sortowania",
+            "notAnAudio": "To nie jest plik audio: %@",
+            "cantDecode": "Nie można zdekodować \"%@\" — pomijam",
+            "noPlayable": "Brak odtwarzalnych plików w tym folderze",
+            "idleHint": "Kliknij plik audio, aby odtworzyć — kliknij ponownie, aby zatrzymać",
+            "fromPane": "z panelu %@",
+            "prevHelp": "Poprzedni (ponowne uruchomienie utworu po 3 s)",
+            "nextHelp": "Następny",
+            "pauseHelp": "Pauza", "resumeHelp": "Odtwórz",
+            "copyToOther": "Kopiuj zaznaczone do drugiego panelu",
+            "moveToOther": "Przenieś zaznaczone do drugiego panelu",
+            "selectFirst": "Najpierw zaznacz pliki kółkami wyboru",
+            "copiedDone": "Skopiowano: %d",
+            "movedDone": "Przeniesiono: %d",
+            "opErrors": ", błędy: %d",
+            "transferring": "Przesyłanie %d z %d…",
+            "renamedConflict": "zmieniono nazwę przy konflikcie",
+            "settings": "Ustawienia", "version": "Wersja",
+            "fontSize": "Rozmiar czcionki", "languageLabel": "Język", "themeLabel": "Motyw",
+            "themeDark": "Ciemny", "themeLight": "Jasny",
+            "themePastel": "Pastelowy", "themeBlue": "Niebieski",
+            "close": "Zamknij",
+            "openCtx": "Otwórz", "finderCtx": "Pokaż w Finderze",
+            "stopTip": "Odtwarzanie — kliknij, aby zatrzymać",
+            "swapPanes": "Zamień panele",
+            "trashSel": "Przenieś zaznaczone do Kosza",
+            "trashedDone": "Wyrzucono do Kosza: %d",
+            "skinsLabel": "Skórki", "importSkin": "Importuj .skn…",
+            "skinBad": "Nieprawidłowy plik .skn",
+            "noSkins": "Brak zaimportowanych skórek",
+            "removeSkin": "Usuń tę skórkę"
+        ],
+        .italian: [
+            "left": "Sinistro", "right": "Destro",
+            "up": "Cartella superiore", "refresh": "Aggiorna",
+            "chooseFolder": "Scegli cartella…", "recentFolders": "Cartelle recenti",
+            "name": "Nome", "size": "Dimens.", "duration": "Durata",
+            "foldersN": "cartelle", "filesN": "file", "audioN": "audio",
+            "playedLength": "durata %1$@ di %2$@",
+            "select": "Seleziona", "deselect": "Deseleziona",
+            "sortHelp": "Ordina per %@",
+            "seekHelp": "Posizione brano", "volumeHelp": "Volume",
+            "playAll": "Riproduci tutto",
+            "playAllHelp": "Riproduce tutti i file audio della cartella in ordine",
+            "notAnAudio": "Non è un file audio: %@",
+            "cantDecode": "Impossibile decodificare \"%@\" — salto",
+            "noPlayable": "Nessun brano riproducibile in questa cartella",
+            "idleHint": "Clicca un file audio per riprodurlo — clicca ancora per fermare",
+            "fromPane": "dal pannello %@",
+            "prevHelp": "Precedente (riavvia il brano dopo 3 s)",
+            "nextHelp": "Successivo",
+            "pauseHelp": "Pausa", "resumeHelp": "Riproduci",
+            "copyToOther": "Copia la selezione nell'altro pannello",
+            "moveToOther": "Sposta la selezione nell'altro pannello",
+            "selectFirst": "Seleziona prima gli elementi con i cerchi",
+            "copiedDone": "Copiati %d elementi",
+            "movedDone": "Spostati %d elementi",
+            "opErrors": ", %d errori",
+            "transferring": "Trasferimento %d di %d…",
+            "renamedConflict": "rinominato se esiste",
+            "settings": "Impostazioni", "version": "Versione",
+            "fontSize": "Dimensione testo", "languageLabel": "Lingua", "themeLabel": "Tema",
+            "themeDark": "Scuro", "themeLight": "Chiaro",
+            "themePastel": "Pastello", "themeBlue": "Blu",
+            "close": "Chiudi",
+            "openCtx": "Apri", "finderCtx": "Mostra nel Finder",
+            "stopTip": "In riproduzione — clicca per fermare",
+            "swapPanes": "Scambia pannelli",
+            "trashSel": "Sposta la selezione nel Cestino",
+            "trashedDone": "Cestinati %d elementi",
+            "skinsLabel": "Skin", "importSkin": "Importa .skn…",
+            "skinBad": "File .skn non valido",
+            "noSkins": "Nessuna skin importata",
+            "removeSkin": "Rimuovi questa skin"
+        ],
+        .chinese: [
+            "left": "左", "right": "右",
+            "up": "上一级文件夹", "refresh": "刷新",
+            "chooseFolder": "选择文件夹…", "recentFolders": "最近的文件夹",
+            "name": "名称", "size": "大小", "duration": "时长",
+            "foldersN": "个文件夹", "filesN": "个文件", "audioN": "音频",
+            "playedLength": "已播放时长 %1$@ / %2$@",
+            "select": "选择", "deselect": "取消选择",
+            "sortHelp": "按%@排序",
+            "seekHelp": "播放位置", "volumeHelp": "音量",
+            "playAll": "全部播放",
+            "playAllHelp": "按排序播放此文件夹中的所有音频文件",
+            "notAnAudio": "不是音频文件：%@",
+            "cantDecode": "无法解码「%@」—跳过",
+            "noPlayable": "此文件夹中没有可播放的文件",
+            "idleHint": "点击音频文件开始播放——再次点击停止",
+            "fromPane": "来自%@面板",
+            "prevHelp": "上一个（3秒后重播当前曲目）",
+            "nextHelp": "下一个",
+            "pauseHelp": "暂停", "resumeHelp": "播放",
+            "copyToOther": "将选中项复制到另一侧",
+            "moveToOther": "将选中项移动到另一侧",
+            "selectFirst": "请先用圆圈复选框选择项目",
+            "copiedDone": "已复制 %d 项",
+            "movedDone": "已移动 %d 项",
+            "opErrors": "，%d 个错误",
+            "transferring": "正在传输第 %d 项，共 %d 项…",
+            "renamedConflict": "冲突时自动重命名",
+            "settings": "设置", "version": "版本",
+            "fontSize": "字体大小", "languageLabel": "语言", "themeLabel": "主题",
+            "themeDark": "深色", "themeLight": "浅色",
+            "themePastel": "粉彩", "themeBlue": "蓝色",
+            "close": "关闭",
+            "openCtx": "打开", "finderCtx": "在 Finder 中显示",
+            "stopTip": "正在播放——点击停止",
+            "swapPanes": "交换两侧",
+            "trashSel": "将选中项移到废纸篓",
+            "trashedDone": "已移到废纸篓 %d 项",
+            "skinsLabel": "皮肤", "importSkin": "导入 .skn…",
+            "skinBad": "无效的 .skn 文件",
+            "noSkins": "尚未导入皮肤",
+            "removeSkin": "删除此皮肤"
+        ]
+    ]
+}

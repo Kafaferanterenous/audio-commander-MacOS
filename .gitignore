@@ -1,0 +1,10 @@
+# macOS
+.DS_Store
+
+# Build artifacts
+build/
+dist/
+*.app
+
+# Logs
+*.log
