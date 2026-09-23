@@ -99,6 +99,10 @@ final class AppSettings: ObservableObject {
     }
     @Published var settingsRequest = 0
 
+    @Published var showAllFiles: Bool {
+        didSet { UserDefaults.standard.set(showAllFiles, forKey: "ac_show_all") }
+    }
+
     func requestSettings() { settingsRequest += 1 }
 
     // Imported .skn palettes override the built-in theme while selected.
@@ -170,6 +174,7 @@ final class AppSettings: ObservableObject {
         let stored = defaults.double(forKey: "ac_font_scale")
         fontScale = stored > 0 ? stored : 1.0
         selectedSkin = defaults.string(forKey: "ac_skn")
+        showAllFiles = defaults.bool(forKey: "ac_show_all")
         loadSkinsFromDisk()
     }
 
@@ -232,7 +237,14 @@ final class AppSettings: ObservableObject {
             "skinsLabel": "Skins", "importSkin": "Import .skn…",
             "skinBad": "Invalid .skn file",
             "noSkins": "No skins imported yet",
-            "removeSkin": "Remove this skin"
+            "removeSkin": "Remove this skin",
+            "showAllFiles": "Show all files",
+            "audioOnlyHint": "When off, the panes list only folders and audio files this app can play.",
+            "playableFormats": "Audio formats this app can play",
+            "notImplementedFormats": "Audio formats recognized but not implemented yet",
+            "sleepTimerLabel": "Sleep timer",
+            "sleepOff": "Off",
+            "sleepMinutes": "%d minutes"
         ],
         .polish: [
             "left": "Lewy", "right": "Prawy",
@@ -275,7 +287,14 @@ final class AppSettings: ObservableObject {
             "skinsLabel": "Skórki", "importSkin": "Importuj .skn…",
             "skinBad": "Nieprawidłowy plik .skn",
             "noSkins": "Brak zaimportowanych skórek",
-            "removeSkin": "Usuń tę skórkę"
+            "removeSkin": "Usuń tę skórkę",
+            "showAllFiles": "Pokaż wszystkie pliki",
+            "audioOnlyHint": "Gdy wyłączone, panele pokazują tylko foldery i pliki audio odtwarzane przez aplikację.",
+            "playableFormats": "Formaty audio, które ta aplikacja może odtwarzać",
+            "notImplementedFormats": "Formaty audio rozpoznawane, ale jeszcze nieobsługiwane",
+            "sleepTimerLabel": "Wyłącznik czasowy",
+            "sleepOff": "Wyłączony",
+            "sleepMinutes": "%d minut"
         ],
         .italian: [
             "left": "Sinistro", "right": "Destro",
@@ -318,7 +337,14 @@ final class AppSettings: ObservableObject {
             "skinsLabel": "Skin", "importSkin": "Importa .skn…",
             "skinBad": "File .skn non valido",
             "noSkins": "Nessuna skin importata",
-            "removeSkin": "Rimuovi questa skin"
+            "removeSkin": "Rimuovi questa skin",
+            "showAllFiles": "Mostra tutti i file",
+            "audioOnlyHint": "Se disattivata, i pannelli mostrano solo cartelle e file audio riproducibili dall'app.",
+            "playableFormats": "Formati audio che questa app può riprodurre",
+            "notImplementedFormats": "Formati audio riconosciuti ma non ancora implementati",
+            "sleepTimerLabel": "Timer di sospensione",
+            "sleepOff": "Spento",
+            "sleepMinutes": "%d minuti"
         ],
         .chinese: [
             "left": "左", "right": "右",
@@ -361,7 +387,14 @@ final class AppSettings: ObservableObject {
             "skinsLabel": "皮肤", "importSkin": "导入 .skn…",
             "skinBad": "无效的 .skn 文件",
             "noSkins": "尚未导入皮肤",
-            "removeSkin": "删除此皮肤"
+            "removeSkin": "删除此皮肤",
+            "showAllFiles": "显示所有文件",
+            "audioOnlyHint": "关闭时，面板仅列出文件夹和此应用可以播放的音频文件。",
+            "playableFormats": "此应用支持的音频格式",
+            "notImplementedFormats": "已识别但尚未实现的音频格式",
+            "sleepTimerLabel": "睡眠定时器",
+            "sleepOff": "关闭",
+            "sleepMinutes": "%d 分钟"
         ]
     ]
 }

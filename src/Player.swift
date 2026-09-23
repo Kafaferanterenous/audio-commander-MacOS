@@ -8,8 +8,17 @@ final class PlayerState: NSObject, ObservableObject {
     @Published private(set) var currentTime: TimeInterval = 0
     @Published private(set) var duration: TimeInterval = 0
     @Published private(set) var sourcePane: String?
-    @Published var volume: Double = 0.8 { didSet { applyVolume() } }
+    @Published var volume: Double = 0.8 {
+        didSet { applyVolume(); UserDefaults.standard.set(volume, forKey: "ac_volume") }
+    }
     @Published var playbackNote: String?
+
+    @Published var sleepMinutes: Int = 0 {
+        didSet {
+            UserDefaults.standard.set(sleepMinutes, forKey: "ac_sleep_min")
+            rescheduleSleepTimer()
+        }
+    }
 
     private enum Engine { case none, avaudio, avplayer, embedded, midi }
     private var activeEngine: Engine = .none
@@ -52,8 +61,44 @@ final class PlayerState: NSObject, ObservableObject {
     private var userPaused = false
     private var failuresInARow = 0
     private var ticker: Timer?
+    private var sleepActivity: NSObjectProtocol?
+    private var sleepTimer: Timer?
+
+    private func setPreventSleep(_ active: Bool) {
+        if active, sleepActivity == nil {
+            sleepActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.idleSystemSleepDisabled, .userInitiated],
+                reason: "AudioCommander is playing audio")
+        } else if !active, let token = sleepActivity {
+            ProcessInfo.processInfo.endActivity(token)
+            sleepActivity = nil
+        }
+    }
 
     // MARK: - Queue control
+
+    override init() {
+        super.init()
+        let stored = UserDefaults.standard.double(forKey: "ac_volume")
+        if stored > 0 { volume = stored }
+        sleepMinutes = UserDefaults.standard.integer(forKey: "ac_sleep_min")
+    }
+
+    private func rescheduleSleepTimer() {
+        sleepTimer?.invalidate()
+        sleepTimer = nil
+        guard sleepMinutes > 0 else { return }
+        let t = Timer(timeInterval: TimeInterval(sleepMinutes * 60), repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.sleepTimer = nil
+                self.sleepMinutes = 0
+                self.stopPlayback()
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        sleepTimer = t
+    }
 
     func playQueue(items: [FileItem], index: Int, paneLabel: String) {
         guard !items.isEmpty else { return }
@@ -145,6 +190,12 @@ final class PlayerState: NSObject, ObservableObject {
         queue.removeAll()
         queueIndex = 0
         failuresInARow = 0
+        setPreventSleep(false)
+        sleepTimer?.invalidate()
+        sleepTimer = nil
+        if sleepMinutes != 0 {
+            sleepMinutes = 0
+        }
     }
 
     func next() {
@@ -208,6 +259,7 @@ final class PlayerState: NSObject, ObservableObject {
         failuresInARow = 0
         isPlaying = true
         userPaused = false
+        setPreventSleep(true)
         startTicker()
     }
 

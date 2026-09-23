@@ -133,6 +133,11 @@ static long voc_resample_chunk(float **buf, long *cap, long *len,
     return emitted;
 }
 
+static long voc_resample_adpcm(float **buf, long *cap, long *len, int *idx,
+                               int *prev, const unsigned char *data,
+                               long bytes, double rate, double *phase,
+                               float *prevf, int *has_prev);
+
 static int voc_decode_all(dec_decoder *d) {
     const unsigned char *p = d->data;
     long size = d->size;
@@ -142,6 +147,7 @@ static int voc_decode_all(dec_decoder *d) {
     double phase = 0.0;
     float prev = 0.0f;
     int has_prev = 0;
+    int adpcm_idx = 0, adpcm_prev = 0;
 
     if (size < 26 || memcmp(p, "Creative Voice File\x1a", 20) != 0) return 0;
     off = p[20] | (p[21] << 8);
@@ -164,6 +170,16 @@ static int voc_decode_all(dec_decoder *d) {
                 if (codec == 3) count /= 2;
                 if (voc_resample_chunk(&buf, &cap, &len, body + 2, count,
                                        codec, rate, &phase, &prev, &has_prev) < 0)
+                    goto oom;
+                break;
+            }
+            case 0x02: { /* sound data: 4-bit ADPCM, 8 kHz (Sound Blaster) */
+                if (blen < 2) break;
+                unsigned char sr_byte = body[0];
+                double rate = 1000000.0 / (256 - sr_byte);
+                if (voc_resample_adpcm(&buf, &cap, &len, &adpcm_idx,
+                                       &adpcm_prev, body + 1, (long)blen - 1,
+                                       rate, &phase, &prev, &has_prev) < 0)
                     goto oom;
                 break;
             }
@@ -194,7 +210,7 @@ static int voc_decode_all(dec_decoder *d) {
                 }
                 break;
             }
-            case 0x09: { /* extended format sound data */
+            case 0x09: case 0x0B: { /* extended format + ADPCM sound data blocks */
                 if (blen < 12) break;
                 unsigned long datalen = (unsigned long)body[0]
                     | ((unsigned long)body[1] << 8)
@@ -208,8 +224,9 @@ static int voc_decode_all(dec_decoder *d) {
                 unsigned char bits = body[10];
                 unsigned char chans = body[11];
                 if (datalen > blen - 12) datalen = blen - 12;
-                if (fmt != 1 || (bits != 8 && bits != 16)) break; /* ADPCM etc.: skip */
-                if (chans == 2 && bits == 16 && datalen >= 4) {
+                if (fmt != 1) break; /* only uncompressed + our ADPCM below */
+                if ((bits == 16 || bits == 8) && datalen > 0) {
+                    if (chans == 2 && bits == 16 && datalen >= 4) {
                     long frames = (long)datalen / 4;
                     long i;
                     double step = (double)hz / (double)OUT_RATE;
@@ -250,9 +267,15 @@ static int voc_decode_all(dec_decoder *d) {
                                            &phase, &prev, &has_prev) < 0)
                         goto oom;
                 }
-                break;
+            } else if (bits == 4 && chans == 1 && datalen > 0) {
+                if (voc_resample_adpcm(&buf, &cap, &len, &adpcm_idx,
+                                       &adpcm_prev, body + 12, (long)datalen,
+                                       (double)hz, &phase, &prev, &has_prev) < 0)
+                    goto oom;
             }
-            default:
+            break;
+        }
+        default:
                 break; /* markers (0x04/0x06/0x07), text blocks: skip */
         }
 
@@ -267,6 +290,62 @@ static int voc_decode_all(dec_decoder *d) {
 oom:
     free(buf);
     return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* VOC 4-bit ADPCM (Creative Labs / Sound Blaster recording format)   */
+/* ------------------------------------------------------------------ */
+
+static const short voc_step_tab[49] = {
+    16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80,
+    88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337,
+    371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963, 1060, 1166, 1282,
+    1411, 1552
+};
+
+static const char voc_index_tab[16] = {
+    -1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8
+};
+
+/* Decode one 4-bit nibble, updating ADPCM state. Returns 16-bit sample. */
+static int voc_adpcm4_sample(int *idx, int *prev, unsigned char nib) {
+    int s = nib & 0x0F;
+    int step = voc_step_tab[*idx];
+    int diff = step >> 3;
+    if (s & 1) diff += step >> 2;
+    if (s & 2) diff += step >> 1;
+    if (s & 4) diff += step;
+    int sample = (s & 8) ? (*prev - diff) : (*prev + diff);
+    if (sample > 32767) sample = 32767;
+    if (sample < -32768) sample = -32768;
+    *idx += voc_index_tab[s];
+    if (*idx < 0) *idx = 0;
+    if (*idx > 48) *idx = 48;
+    *prev = sample;
+    return sample;
+}
+
+/* Decode bytes of packed 4-bit ADPCM (2 samples/byte, MSB first) and feed
+ * the resulting s16 stream through the shared linear resampler. ADPCM state
+ * carries across blocks so a chain of blocks decodes as one stream. */
+static long voc_resample_adpcm(float **buf, long *cap, long *len, int *idx,
+                               int *prev, const unsigned char *data,
+                               long bytes, double rate, double *phase,
+                               float *prevf, int *has_prev) {
+    if (bytes <= 0) return 0;
+    long nsamples = bytes * 2;
+    short *smp = (short *)malloc((size_t)nsamples * sizeof(short));
+    if (!smp) return -1;
+    long k;
+    for (k = 0; k < bytes; k++) {
+        unsigned char b = data[k];
+        smp[k * 2] = (short)voc_adpcm4_sample(idx, prev, b >> 4);
+        smp[k * 2 + 1] = (short)voc_adpcm4_sample(idx, prev, b & 0x0F);
+    }
+    long rc = voc_resample_chunk(buf, cap, len, (const unsigned char *)smp,
+                                 nsamples, 3, rate, phase, prevf, has_prev);
+    free(smp);
+    return rc;
 }
 
 /* ------------------------------------------------------------------ */

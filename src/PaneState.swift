@@ -106,7 +106,9 @@ final class PaneState: ObservableObject {
                     isAudio: !isDir && AudioFormats.isAudioFile(url.lastPathComponent),
                     duration: nil))
             }
-            baseItems = scanned
+            baseItems = AppSettings.shared.showAllFiles
+                ? scanned
+                : scanned.filter { $0.isDirectory || $0.isAudio }
             statusMessage = nil
             applySort()
             computeTotals()

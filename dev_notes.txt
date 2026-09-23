@@ -470,3 +470,136 @@ build artifacts (build/, dist/, *.app, **/target as applicable) gitignored.
   full level), build.sh touch refresh.
 - Info.plist 15 -> 16. Re-test: FULL .mid playback, pause/resume b11-style,
   library scan no crash.
+
+=== 2026-09-23 (part 10) — SETTINGS: FILE-FILTER TOGGLE + FORMAT LISTS (b17) ===
+- USER asked (this build is NOT yet released):
+  * Settings: "Show all files" vs "only audio this app can play";
+    show-all DESELECTED (audio-only) by default.
+  * Settings: list formats the app plays, and formats not yet implemented.
+- CHANGES:
+  * FileItem: moved wma/ape/wv/dsf/dff OUT of nativeExtensions into new
+    unsupportedExtensions -> they no longer falsely count as playable audio
+    (were listed as songs and tried to decode). extensions set excludes them.
+  * FileItem: playableFormatsText (native / vorbis+trackers / midi) and
+    nonImplementedFormatsText (WMA, APE, WavPack, DSD, AC3/EAC3, DTS, TTA,
+    AU/SND, Ogg FLAC, VOC ADPCM) for the sheet.
+  * AppSettings: ac_show_all Bool persisted (default false), 4 locales.
+  * PaneState.refresh: when showAllFiles=false, baseItems = folders +
+    playable audio only (totals/sort/durations follow the filtered set).
+  * ContentView: SettingsSheet Toggle + caption + Divider + two format info
+    blocks; ContentView refreshes BOTH panes on ac_show_all change.
+- Info.plist 16 -> 17. NOT yet uploaded (b16 already pushed + v0.6.0 release).
+  Test: toggle hides non-audio file (e.g. .txt/.png) in panes by default;
+  formats lists render in all 4 languages; scans still fast.
+
+=== MERGED BACKLOG 2026-09-23 — FORMATS + FEATURES, EASIEST->HARDEST (25) ===
+UI PRINCIPLE (user): main interface must NOT grow crowded -> heavy/optional
+features live in a RIGHT-SIDE SLIDE-OUT DRAWER (tools/utilities panel);
+only tiny transport toggles (shuffle/repeat/sleep) stay on the bar.
+(F)=format playback, (X)=app feature.
+   1. (F) AU/SND               5%   pure PCM
+   2. (X) Prevent sleep         5%   NSProcessInfo, ~10 lines
+   3. (F) VOC ADPCM            10%   tiny block on the existing VOC path
+   4. (X) Remember window/vol  10%   UserDefaults wiring
+   5. (X) Sleep timer          15%   timer + #2
+   6. (F) AC3/EAC3             20%   CoreAudio/AVPlayer likely decodes already
+   7. (X) Media keys+NowPlay   30%   MPNowPlayingInfoCenter
+   8. (F) TTA                  35%   small libtta
+   9. (X) Shuffle + repeat     35%   on existing queue infra
+  10. (X) Playlist .m3u        40%   parser + drawer manager
+  11. (F) WavPack              45%   official single-library codec
+  12. (X) Drag & drop          45%   NSItemProvider drop
+  13. (X) Mini player          45%   floating window
+  14. (X) Gapless/crossfade    50%   engine scheduling
+  15. (F) Ogg FLAC             55%   libFLAC + Ogg container
+  16. (X) Spectrum visualizer  55%   DFT + canvas (drawer)
+  17. (X) 10-band EQ           55%   AVAudioEngine EQ AU (drawer)
+  18. (F) DSD DSF/DFF          60%   DSD->PCM decimation needed
+  19. (X) ReplayGain           60%   scan + apply gain
+  20. (F) DTS                  65%   no small standalone decoder
+  21. (X) MP3 ID3 meta editor  65%   TagLib or ID3v2 writer + drawer
+  22. (F) APE                  70%   MAC library, streaming awkward
+  23. (X) MIDI instrument/bank 75%   AVMIDIPlayer no bank API; sampler risky
+  24. (F) WMA                  85%   FFmpeg-only decoder
+  25. (F) WMAPro               90%   subset above, even heavier (if ever)
+
+=== 2026-09-23 (part 11) — BACKLOG #1 DONE: AU/SND NATIVE (b18) ===
+- User approved: work the merged 25-item backlog ONE AT A TIME.
+- #1 AU/SND 5%: PROBED FIRST -> CoreAudio ALREADY decodes Sun audio.
+  Generated test.au (Sun header, encoding 3 = s16 BE, 44100, mono, 0.5s);
+  AVURLAsset load(.duration)=0.50027s isPlayable=true; AVAudioFile opened
+  22062 frames @44100. So = pure extension-wiring (no decoder work).
+- CHANGE: FileItem.nativeExtensions += "au", "snd".
+  NOTE: .snd is ambiguous (SGI/Amiga raw samples) -> if a file mislabeled
+  .snd fails, AVPlayer native route -> A/B/C fallback -> skipWithNote.
+  Duration probe for those returns nil -> shows "—" duration, not counted
+  in known-duration total. Acceptable.
+- Info.plist 17 -> 18. NOT pushed/released.
+  Test: a .au file plays in both panes (duration shows), shows in the
+  Settings playable list, and a garbage .snd does not crash.
+
+=== 2026-09-23 (part 12) — BACKLOG #2 DONE: PREVENT SLEEP (b19) ===
+- #2 Prevent sleep 5%: NSProcessInfo activity token lifecycle in PlayerState.
+- PlayerState: sleepActivity token acquired via beginActivity
+  [.idleSystemSleepDisabled, .userInitiated] on successful playCurrent
+  start; released in stopPlayback. Pause keeps the token (music players
+  stay awake; harmless). trackEnded->stopPlayback and
+  handleUnplayableCurrent->allFailed->stopPlayback both release it.
+  Process-lifetime leak impossible (process dies with token).
+- Info.plist 18 -> 19. NOT pushed/released.
+  Test: start a long track, take Mac idle past display sleep -> system must
+  NOT sleep while playing; stop playback -> sleep allowed again.
+
+=== 2026-09-23 (part 13) — BACKLOG #3 DONE: VOC 4-bit ADPCM (b20) ===
+- #3 VOC ADPCM 10%: Creative/Sound Blaster 4-bit ADPCM added to decoders.c.
+  * voc_step_tab[49] + voc_index_tab[16], voc_adpcm4_sample() (standard
+    Creative expand: step/4 deltas, adaptive index clamped 0..48).
+  * voc_resample_adpcm(): nibbles (2/byte, MSB-first) -> s16 -> shared
+    voc_resample_chunk (linear -> 44100), ADPCM state carries ACROSS
+    blocks so a chain decodes as one continuous stream.
+  * Block 0x02 (8kHz mono 4-bit ADPCM per VOC spec) newly handled.
+  * Extended blocks 0x09 AND 0x0B now also accept mono bits==4 ADPCM at
+    the block's hz (stereo 4-bit still skipped; 6-bit/2.x-bit still skip).
+- VERIFIED (standalone dec_probe linked from vendored C):
+  * test_adpcm.voc (2 x 1s 4-bit-ADPCM blocks, Python encoder mirroring
+    the decoder tables) -> duration 2.000s EXACT, 88200 frames, loud
+    chunks 87, mid-seek rms 0.1321. Two-block continuity proven.
+  * Full fixtures baseline unchanged (test.voc PCM PASS; loud.*/s3m PASS;
+    test.mod/test.xm silent-stream FAILs remain the known fixture
+    artifacts; test.mid open-FAIL is harness-expected).
+  * Had to forward-declare voc_resample_adpcm (helpers live below
+    voc_decode_all) - first compile failed on implicit decl.
+- Info.plist 19 -> 20. NOT pushed/released.
+  Test: play a real Sound-Blaster ADPCM .voc on the real Mac if available;
+  otherwise the fixture tone plays at 8kHz pitch (vs 440Hz source).
+  NOTE: whisper-spec voices etc. typically u8/u16 PCM - already fine.
+
+=== 2026-09-23 (part 14) — BACKLOG #4 DONE: WINDOW FRAME + VOLUME MEMORY (b21) ===
+- #4 Remember window size/position + volume 10%:
+  * Volume: PlayerState.init reads ac_volume (double > 0 else 0.8); existing
+    volume didSet now ALSO writes ac_volume. (didSet not fired during init
+    assignment, so no redundant write/side-effect.)
+  * Window: AppDelegate is now NSWindowDelegate. On launch, restores
+    ac_win_frame (NSRectFromString) clamped to NSScreen.main.visibleFrame,
+    only if stored rect >= 600x400. windowDidMove/windowDidResize debounce
+    0.4s (cancelPreviousPerformRequests) into saveWindowFrame; willClose
+    saves immediately. Stored via NSStringFromRect. Window keeps
+    .hiddenTitleBar styling; we also set title explicitly post-launch.
+- Info.plist 20 -> 21. NOT pushed/released.
+  Test: resize+move window, quit, relaunch -> same frame restored on-screen;
+  drag volume slider, quit, relaunch -> slider in same place; no window=
+  on a smaller resolution (clamped).
+
+=== 2026-09-23 (part 15) — BACKLOG #5 DONE: SLEEP TIMER (b22) ===
+- #5 Sleep timer 15%: PlayerState.sleepMinutes (Int, 0=off), persisted
+  ac_sleep_min, restored in init. didSet -> rescheduleSleepTimer(): single
+  one-shot Timer on .common runloop fires stopPlayback() (+ clears timer
+  itself). stopPlayback() also cancels the timer and resets sleepMinutes=0
+  so no timer lingers after manual stop / end-of-queue.
+- UI: Settings sheet "Sleep timer" Picker (Off / 15 / 30 / 60 / 90 min) via
+  binding to store.player.sleepMinutes; SleepTimerOptions enum + labels
+  localized x4 (sleepTimerLabel/sleepOff/sleepMinutes). No main-bar chrome.
+- Info.plist 21 -> 22. NOT pushed/released.
+  Test: set 15min, play, set system clock forward 15m (or wait) -> playback
+  stops and picker resets to Off; set timer then stop manually -> picker
+  shows Off; relaunch -> last choice remembered.

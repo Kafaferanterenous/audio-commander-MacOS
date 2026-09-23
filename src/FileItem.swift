@@ -16,9 +16,13 @@ enum AudioFormats {
     static let nativeExtensions: Set<String> = [
         "wav", "wave", "aif", "aiff", "aifc",
         "mp3", "mp2", "m4a", "m4b", "mp4", "aac", "adts", "alac",
-        "flac", "caf",
+        "flac", "caf", "au", "snd",
         "opus",
-        "amr", "3gp", "3gpp", "3g2", "3ga",
+        "amr", "3gp", "3gpp", "3g2", "3ga"
+    ]
+    /// Audio formats the app recognizes but cannot decode yet.
+    /// Kept out of `extensions` so they never show as playable.
+    static let unsupportedExtensions: Set<String> = [
         "wma", "ape", "wv", "dsf", "dff"
     ]
     /// Formats handled by the embedded C decoders (DUMB + stb_vorbis + VOC).
@@ -164,6 +168,24 @@ enum AudioFormats {
 
     static let extensions: Set<String> =
         nativeExtensions.union(embeddedExtensions).union(midiExtensions)
+
+    /// Human-readable line for the Settings sheet: formats that actually play.
+    static let playableFormatsText: String = {
+        func spaced(_ set: Set<String>) -> String {
+            set.sorted().joined(separator: " ")
+        }
+        return """
+        Native (CoreAudio): \(spaced(nativeExtensions))
+        Vorbis / trackers (DUMB + stb): \(spaced(embeddedExtensions))
+        MIDI: \(spaced(midiExtensions))
+        """
+    }()
+
+    /// Human-readable line for the Settings sheet: formats recognized by the
+    /// app or ecosystem but not decoded yet, and which could be added.
+    static let nonImplementedFormatsText: String =
+        "WMA (Windows Media), APE (Monkey's), WavPack (WV), DSD (DSF/DFF), "
+        + "AC3/EAC3, DTS, TTA (True Audio), AU/SND, Ogg FLAC, VOC ADPCM"
 
     enum Route { case native, embedded, midi }
 

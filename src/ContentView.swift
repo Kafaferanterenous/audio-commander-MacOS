@@ -9,9 +9,47 @@ extension KeyEquivalent {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let win = NSApp.windows.first else { return }
+            win.delegate = self
+            win.title = "AudioCommander"
+            self.refreshWindowFrame(win)
+        }
+    }
+
+    func windowDidMove(_ notification: Notification) { scheduleSaveWindowFrame() }
+    func windowDidResize(_ notification: Notification) { scheduleSaveWindowFrame() }
+    func windowWillClose(_ notification: Notification) { saveWindowFrame() }
+
+    private func refreshWindowFrame(_ win: NSWindow) {
+        guard let stored = UserDefaults.standard.string(forKey: "ac_win_frame"),
+              let visible = NSScreen.main?.visibleFrame else { return }
+        let r = NSRectFromString(stored)
+        guard r.width >= 600, r.height >= 400 else { return }
+        let x = min(max(r.midX - r.width / 2, visible.minX),
+                    visible.maxX - r.width)
+        let y = min(max(r.midY - r.height / 2, visible.minY),
+                    visible.maxY - r.height)
+        win.setFrame(NSRect(x: x, y: y, width: r.width, height: r.height),
+                     display: false)
+    }
+
+    private func scheduleSaveWindowFrame() {
+        NSObject.cancelPreviousPerformRequests(withTarget: self,
+                                               selector: #selector(saveWindowFrame),
+                                               object: nil)
+        perform(#selector(saveWindowFrame), with: nil, afterDelay: 0.4)
+    }
+
+    @objc private func saveWindowFrame() {
+        guard let win = NSApp.windows.first else { return }
+        UserDefaults.standard.set(NSStringFromRect(win.frame), forKey: "ac_win_frame")
     }
 }
 
@@ -201,6 +239,12 @@ struct ContentView: View {
         .onChange(of: settings.settingsRequest) { _ in
             showSettings = true
         }
+        .onChange(of: settings.showAllFiles) { _ in
+            Task {
+                await store.left.refresh()
+                await store.right.refresh()
+            }
+        }
         .onChange(of: focusedPane) { pane in
             if let side = pane {
                 store.activeSide = side == .leftPane ? "left" : "right"
@@ -310,6 +354,7 @@ struct TransferOverlay: View {
 struct SettingsSheet: View {
     @EnvironmentObject var settings: AppSettings
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var store = CommanderStore.shared
     @State private var showSkinImporter = false
     @State private var skinImportFailed = false
 
@@ -401,6 +446,48 @@ struct SettingsSheet: View {
                 .frame(maxWidth: 220, alignment: .leading)
             }
 
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle(settings.t("showAllFiles"), isOn: $settings.showAllFiles)
+                    .toggleStyle(.switch)
+                    .font(settings.scaled(13))
+                Text(settings.t("audioOnlyHint"))
+                    .font(settings.scaled(11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(settings.t("sleepTimerLabel"))
+                    .font(settings.scaled(13))
+                Picker("", selection: Binding(
+                    get: { store.player.sleepMinutes },
+                    set: { store.player.sleepMinutes = $0 })) {
+                    ForEach(SleepTimerOptions.allCases) { opt in
+                        Text(opt.label(settings: settings)).tag(opt.minutes)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: 220, alignment: .leading)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(settings.t("playableFormats"))
+                    .font(settings.scaled(13))
+                Text(AudioFormats.playableFormatsText)
+                    .font(settings.scaled(10).monospaced())
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(settings.t("notImplementedFormats"))
+                    .font(settings.scaled(13))
+                    .padding(.top, 4)
+                Text(AudioFormats.nonImplementedFormatsText)
+                    .font(settings.scaled(10).monospaced())
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             HStack {
                 Spacer()
                 Button(settings.t("close")) { dismiss() }
@@ -489,6 +576,25 @@ struct SettingsSheet: View {
                     .font(settings.scaled(11).weight(.medium))
                     .foregroundStyle(Color.orange)
             }
+        }
+    }
+}
+
+// MARK: - Sleep timer options
+
+enum SleepTimerOptions: Int, CaseIterable, Identifiable {
+    case off = 0, m15 = 15, m30 = 30, m60 = 60, m90 = 90
+    var id: Int { rawValue }
+    var minutes: Int { rawValue }
+
+    @MainActor
+    func label(settings: AppSettings) -> String {
+        switch self {
+        case .off: return settings.t("sleepOff")
+        case .m15: return settings.tf("sleepMinutes", 15)
+        case .m30: return settings.tf("sleepMinutes", 30)
+        case .m60: return settings.tf("sleepMinutes", 60)
+        case .m90: return settings.tf("sleepMinutes", 90)
         }
     }
 }
