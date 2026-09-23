@@ -258,3 +258,215 @@ v0.5 (2026-08-25)
 === 2026-09-14 — uploaded to GitHub (private) ===
 Repo: https://github.com/Kafaferanterenous/audio-commander (main). One initial commit;
 build artifacts (build/, dist/, *.app, **/target as applicable) gitignored.
+
+=== 2026-09-23 — OPUS-IN-OGG SUPPORT (v0.6 b9) ===
+- GOAL: old-Android .opus/.ogg-opus files playable.
+- DISCOVERY: this macOS (26.6, CLT macosx SDK) decodes Opus natively.
+  Verified empirically on this host: afinfo Oggf/'opus' reads the stream
+  (mono 48k, 13.85s); a probe binary shows Engine A (AVAudioFile) opens it
+  (664277 frames) AND Engine B (AVPlayer/AVAsset) loads duration — no
+  embedded decoder needed on modern macOS.
+- CHANGE (src/FileItem.swift): added "opus" to AudioFormats.nativeExtensions
+  so .opus files are recognized as audio, listed, and routed Engine A -> B
+  -> C fallback. Ogg/oga-opus already worked via the embedded-route C, then
+  B fallback (engine C's stb_vorbis rejects opus, playCurrent falls through
+  to AVPlayer) — now also solid.
+- WHY NOT vendored libopus/opusfile: macOS ships the decoder; routing native
+  is zero-build-cost, uses the OS-tested codec, and needs no config.h/
+  hand-rolled Ogg demux. If older-macOS (13.x) ever lacks file Opus decode,
+  the graceful A->B->C skip already applies; vendoring libopus remains a
+  documented fallback option.
+- VERIFIED: build.sh green via DEVELOPER_DIR=/Library/Developer/
+  CommandLineTools (host xcode-select points at a half-broken Xcode.app —
+  fix documented in CHANGELOG tooling note below); fat x86_64+arm64 app OK
+  (3.5 MB). Routing harness: x.opus -> native/true, x.ogg -> embedded/true.
+- Info.plist: CFBundleShortVersionString 0.5 -> 0.6, CFBundleVersion 8 -> 9.
+- REMAIN OPEN: module listen test by ear (modarchive batch), MIDI volume
+  via MusicPlayer+AUSampler, MIDI resume-from-position by ear, .rmi routing.
+- TOOLING NOTE (host): xcrun/xcodebuild fail because xcode-select points
+  at /Applications/Xcode.app (CoreDevice/Mercury dlopen error, no libtool).
+  Prefix ALL builds with: export DEVELOPER_DIR=/Library/Developer/CommandLineTools
+
+=== 2026-09-23 (part 2) — RMID (.rmi) ROUTING (v0.6 b9) ===
+- Goal: .rmi files (RIFF-wrapped SMF) playable; previously "not routed".
+- FINDING: AVMIDIPlayer(contentsOf:) cannot open the .rmi shell even though
+  the payload is a plain SMF. But AVMIDIPlayer(data:) plays the extracted
+  SMF fine — verified on this host: wrapped fixtures/test.mid (44.803125s)
+  then unwrapped -> same duration, OPEN OK.
+- CHANGE (src/FileItem.swift): midiExtensions += "rmi". New
+  AudioFormats.unwrapRMID(data:) parses RIFF/RMID, walks chunks (word-
+  aligned), returns the "data" chunk bytes.
+- CHANGE (src/Player.swift startEngineD): try contentsOf first (.mid/.midi),
+  else for .rmi read Data -> unwrapRMID -> AVMIDIPlayer(data:soundBankURL:).
+- VERIFIED: build.sh green (DEVELOPER_DIR workaround), fat app 3.5 MB.
+  RMID round-trip probe green (data-level). Real playback by user.
+- MIDI VOLUME (MusicPlayer+AUSampler): NOT done — would replace Engine D's
+  AVMIDIPlayer (no volume API) with an AVAudioEngine+AUSampler+MusicSequence
+  graph. Declined this round: cannot ear/audio-verify on this VM, and a live
+  graph rewrite risks regression on pause/resume/seek which currently use
+  AVMIDIPlayer.currentPosition (settable). Kept as optional follow-up
+  (dev_notes "v0.6 candidates") until a real mac is available to test.
+- REMAIN OPEN: module listen test by ear (modarchive batch), MIDI resume-by-
+  ear, MIDI volume via AUSampler (optional), WMA/APE/WavPack/DSD (out of
+  scope), VOC ADPCM (skip).
+
+=== 2026-09-23 (part 3) — FIX: TRACKER PLAYBACK ~2.2x SLOW (v0.6 b10) ===
+- USER REPORT (real mac): .mod/.s3m/.it/.xm play but SLUGGISH/slowed down;
+  mp3/m4a/mid fine.
+- ROOT CAUSE (vendored/decoders/decoders.c): duh_render() delta_time arg
+  was (float)OUT_RATE/65536.0f — the RECIPROCAL of the correct value.
+  DUMB's delta_time is "65536ths of a second per output sample", so it must
+  be 65536.0f/OUT_RATE (1.4861 @44100), not OUT_RATE/65536 (0.6729).
+  Wrong delta -> each output sample advances too little module clock ->
+  same music stretched over 2.2x more frames -> slows playback by 2.2x.
+- PROOF (fixture harness, dumb render): fixture test.mod (duh_len 0.240s):
+  delta=0.6729 -> 23361 frames (=0.530s, 2.2x stretched);
+  delta=1.4861 -> 10578 frames (=0.240s EXACT match). Applied.
+- CHANGE: new DUMB_DELTA (65536.0f/OUT_RATE) used in both DUMB render
+  (dec_render) and DUMB seek (dec_seek). OGG/VOC paths untouched (they use
+  their own resamplers).
+- VERIFIED via dec_open/dec_render full-render harness (real decoder stack):
+  test.mod 0.240s/10578fr, test.s3m 2.575s/113570fr, test.xm 8.628s/380489fr,
+  loud.mod/xm 7.676s/338500fr — ALL now exactly match duh_len durations.
+  tools/test_decoders.c: S3M/VOC/loud.mod PASS (mid-seek rms sane, probe
+  consistent). NOTE: test.mod/test.xm "silent stream" FAILs are PRE-EXISTING
+  fixture artifacts (near-silent byte-written fixtures) — identical under
+  old delta; not a regression.
+- Info.plist CFBundleVersion 9 -> 10. Needs a real-Mac ear check that
+  modules now play at correct tempo.
+
+=== 2026-09-23 (part 4) — FIX: MIDI PAUSE/RESUME STUTTER+STOP (v0.6 b11) ===
+- USER TEST: tracker fix CONFIRMED by ear (real mac). Item 2 (MIDI
+  resume-from-position) FAILS: pause->resume stutters then stops.
+- ROOT CAUSE (Engine D, AVMIDIPlayer): pause used stop(); the resume path set
+  player.currentPosition BEFORE play() while the player was stopped — macOS
+  AVMIDIPlayer commonly IGNORES the position on a stopped player and restarts
+  at 0 -> audible jump/stutter + wrong timeline. Compounding: the 0.25s
+  ticker kept writing player.currentPosition into currentTime while paused
+  (stopped player reports 0), so currentTime dropped to 0 after every pause —
+  scrambling the display, previous() restart logic, and the midiFinished()
+  near-end check (could skip auto-advance).
+- CHANGES (src/Player.swift, Engine D only):
+  1) Resume now: play() first, then re-set currentPosition while PLAYING
+     (both pre- and post-play set, so either macOS behavior is covered).
+  2) midiFinished() end-check now reads player.currentPosition live instead
+     of the (stale/zeroed) published currentTime.
+  3) Ticker .midi branch only updates currentTime while player.isPlaying, so
+     pausing no longer zeroes the displayed position.
+- Pause->resume of .mid/.rmi is inherent to stop()/restart (DLS tail) — small
+  click is expected; the stutter-at-0 and mid-song stop should be gone.
+- Info.plist CFBundleVersion 10 -> 11 (b11).
+- Needs ear re-test: pause->resume on a long .mid; seek-while-paused; seek
+  position retained after resume.
+
+=== 2026-09-23 (part 5) — MIDI REPLACE ENGINE D WITH SEQUENCER+SAMPLER (b12) ===
+- USER TESTS: (1) tracker fix confirmed by ear. (2) MIDI pause->resume
+  stuttered/stopped (b11 hardening did NOT clear it). (3) Further report:
+  MIDI is choppy even in NORMAL playback (no pause). Diagnosis: AVMIDIPlayer
+  built-in DLS synth (safe-render, CPU polyphony limits) is the weak link;
+  app-side pause/seek code was not the cause. Engine D (AVMIDIPlayer) roots
+  replaced.
+- NEW ENGINE E (midiSampler=true, DEFAULT for .mid/.rmi):
+  AVAudioEngine + AVAudioUnitSampler loaded with the GM bank
+  /System/Library/Components/CoreAudio.component/Contents/Resources/
+  gs_instruments.dls (no DLS at /System/Library/Sound/Banks/ on macOS 26!)
+  + AVAudioSequencer(audioEngine:) routing sequenced MIDI per-channel
+  (load SMF with .smf_ChannelsToTracks; track.destinationAudioUnit =
+  sampler). Pause = engine.pause() (NO synth restart) + sequencer.stop();
+  resume = set currentPositionInSeconds + engine.start + sequencer.start.
+  Seek while playing via settable currentPositionInSeconds. Duration from
+  max track.lengthInSeconds; end detection in ticker (position >= d-0.3).
+  Volume via mainMixer.outputVolume = slider value at start.
+- AVMIDIPlayer kept ONLY as auto-fallback when sampler setup fails (no bank
+  file, bad SMF). All .midi branches in togglePause/seek/ticked/teardown are
+  now sequeencer-sampler aware.
+- KNOWN LEFT: channel-10 GM drums NOT mapped (single sampler loaded at 0x79
+  bank = melodic only) — drums may be silent/wrong. Accept for now.
+- SDK notes: AVAudioUnit.midiEndpoint REMOVED on macOS 26 (no
+  MusicTrack->sampler endpoint trick). MusicSequenceFileLoad flags renamed:
+  use AVAudioSequencer.load(from:options:), [.smf_ChannelsToTracks] ok,
+  preserveTracks = [].
+- Info.plist 11 -> 12. NEEDS ear test: normal .mid playback smoothness,
+  pause->resume, scrub while playing + while paused, auto-advance at end.
+
+=== 2026-09-23 (part 6) — MIDI VOLUME SLIDER LIVE + VOC ADPCM DECIDED (b13) ===
+- applyVolume() now also sets eEngine.mainMixerNode.outputVolume, so the
+  volume slider affects .mid/.rmi live (closes item-3's sampler part; was
+  previously only captured at track start).
+- VOC ADPCM (block 0x01 codec 2 / extended fmt 2) DECIDED SKIP (permanent):
+  Creative 4-bit ADPCM decode is determinable but needs its step table +
+  verification vectors, covers a rare subset of .voc; PCM codecs 0/3 + 0x09
+  already handled. Documented, not built. WMA/APE/WavPack/DSD remain out of
+  scope (FFmpeg-scale).
+- GM drums (channel 10): still not mapped (single melodic sampler; track
+  ->channel mapping not exposed). Parked, not critical for the fix.
+- Info.plist 12 -> 13.
+
+=== 2026-09-23 (part 7) — CRASH: AVMIDIPlayer DEALLOC IN DURATION SCANNER (b14) ===
+- USER REPORT (real mac, b13): a .mid "played 2 seconds and stopped, app
+  crashed" -> actually TWO things: playback stopped because the app died.
+- CRASH LOG: /Users/groot/Library/Logs/DiagnosticReports/
+  AudioCommander-2026-09-23-124050.ips  faulting thread 4:
+  AVMIDIPlayer dealloc -> destroyBase -> DisposeMusicSequence ->
+  AudioUnitGraph::Uninitialize/Dispose -> SIGSEGV (0xD) on macOS 26.
+  Trigger = PaneState.readDuration(url:) creating a transient AVMIDIPlayer
+  (soundBankURL:nil) on a DETACHED background thread just to read .duration,
+  then letting it dealloc. AudioToolbox cannot uninit a MIDI AUGraph built
+  on a background thread -> segfault. Engine E (sequencer+sampler) playback
+  was NOT the crash.
+- FIX: replaced the scanner's AVMIDIPlayer probe with a PURE Swift SMF
+  duration parser (AudioFormats.smfDuration(from:)): MThd division,
+  VLQ decoding w/ running-status support, tempo metas (FF 51) from all
+  tracks, per-track end tick (FF 2F or last event), piecewise tempo
+  integration, default 500_000 usec/beat. No audio framework touched.
+  readDuration(.mid/.rmi) now: read data -> (rmi? unwrapRMID) -> smfDuration,
+  on the utility task. The 0.05s min-threshold kept.
+- VERIFIED headless (CLT swiftc): tools/fixtures/test.mid 44.803125s (matches
+  old AVMIDIPlayer read exactly); test.rmi unwrap->same. Running-status
+  branch cleaned.
+- LESSON: never create/destroy AVMIDIPlayer off-main; AudioToolbox teardown
+  is main-thread-only on macOS 26. Engine D fallback still runs on MainActor;
+  playback-only.
+- Info.plist 13 -> 14. Needs re-test: library scan no crash, .mid plays
+  (Engine E) smooth, and console shows no AVMIDIPlayer dealloc path.
+
+=== 2026-09-23 (part 8) — MIDI "STOPS" AT ~2s: SEQUENCER CLOCK JUMP (b15) ===
+- USER (b14): midi "stopped playing after 2 seconds" (no crash this time).
+- REPRODUCED on dev VM with seq_probe harness (AVAudioSequencer+
+  AVAudioUnitSampler + gs_instruments.dls, real code, headless):
+  * track[0].lengthInSeconds = 44.803125 CORRECT
+  * playback runs fine, pos increments 0->1.8s ...
+  * at ~2.2s pos JUMPS 1.84 -> 74062.95s (device sample-clock vs host-tick
+    timebase reset), then advance is linear again (offset ~74061s ≈ 2^31.x
+    samples). playing stays true.
+- CONSEQUENCE in app: our end-detection (pos >= duration-0.3) fired on the
+  bogus 74062s -> trackEnded() -> transport STOPPED a healthy song. Exactly
+  the user's symptom.
+- FIX (app): ticker .midi sampler branch now only advances the playhead and
+  only fires end-of-track when position is in a SANE window:
+  s in [duration-0.5, duration+10]. Runaway positions (> duration+10) leave
+  the UI at the last good position and CANNOT trigger trackEnded. (If a real
+  Mac render glitch also jumps once, the song keeps playing + transport
+  unaffected; if the jump PERSISTS, progress bar freezes but audio continues.)
+- ?????: whether the REAL mac's 2s stop was this clock jump (matches) or a
+  genuine sampler silence. b15 will tell: if the song now plays fully, it was
+  the clock jump. 
+- Info.plist 14 -> 15. Test: does test.mid now play the FULL 44.8s?
+
+=== 2026-09-23 (part 9) — MIDI B16: REVERT DEFAULT TO AVMIDIPLAYER ===
+- USER (b15): still no sound/playback — stopped after ~1s, PROGRESS BAR
+  frozen, no sound. (VM correlates: sequencer position irrecoverably jumps;
+  on real HW the engine appears to stop rendering and engine.isRunning ->
+  false, so the ticker freezes progress.) Sampler path = dead end for now.
+- USER DECISION: revert MIDI to AVMIDIPlayer (proven full playback on the
+  real mac; known mild DLS stutter remains acceptable).
+- CHANGE: startEngineD -> AVMIDIPlayer primary (original order restored,
+  keeps b11 resume hardening). Engine E (sequencer+sampler) demoted to
+  LAST-RESORT fallback only when AVMIDIPlayer cannot open the file
+  (kept for exotic .rmi banks); real-mac sampler stall noted there.
+- KEPT from the E era (all still good): smfDuration scanner (crash fix,
+  no AVMIDIPlayer off-main), live volume slider for midi (via mixer /
+  AVMIDIPlayer is volume-less -> slider now only affects A/B/C/E; midi stays
+  full level), build.sh touch refresh.
+- Info.plist 15 -> 16. Re-test: FULL .mid playback, pause/resume b11-style,
+  library scan no crash.

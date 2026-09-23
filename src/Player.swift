@@ -38,6 +38,14 @@ final class PlayerState: NSObject, ObservableObject {
     // Engine D: MIDI
     private var midiPlayer: AVMIDIPlayer?
     private var midiPausedPosition: TimeInterval?
+    // Engine E: MIDI via AVAudioSequencer -> AVAudioUnitSampler (stutter fix)
+    private var midiSampler = false
+    private var eEngine: AVAudioEngine?
+    private var eSampler: AVAudioUnitSampler?
+    private var eSequencer: AVAudioSequencer?
+    private var midiEnded = false
+    private let gsBankURL = URL(fileURLWithPath:
+        "/System/Library/Components/CoreAudio.component/Contents/Resources/gs_instruments.dls")
 
     private var queue: [FileItem] = []
     private var queueIndex = 0
@@ -86,20 +94,42 @@ final class PlayerState: NSObject, ObservableObject {
             engineCLock.unlock()
             isPlaying = !paused
         case .midi:
-            guard let player = midiPlayer else { return }
-            if player.isPlaying {
-                midiPausedPosition = player.currentPosition
-                player.stop()
-                isPlaying = false
-                userPaused = true
-            } else {
-                if let pos = midiPausedPosition { player.currentPosition = pos }
-                player.play { [weak self] in
-                    Task { @MainActor [weak self] in self?.midiFinished(player) }
+            if midiSampler {
+                guard let engine = eEngine, let seq = eSequencer else { return }
+                if isPlaying {
+                    midiPausedPosition = currentTime
+                    engine.pause()
+                    seq.stop()
+                    isPlaying = false
+                    userPaused = true
+                } else {
+                    seq.stop()
+                    seq.currentPositionInSeconds = midiPausedPosition ?? 0
+                    try? engine.start()
+                    try? seq.start()
+                    isPlaying = true
+                    userPaused = false
+                    midiPausedPosition = nil
+                    midiEnded = false
                 }
-                isPlaying = true
-                userPaused = false
-                midiPausedPosition = nil
+            } else {
+                guard let player = midiPlayer else { return }
+                if player.isPlaying {
+                    midiPausedPosition = player.currentPosition
+                    player.stop()
+                    isPlaying = false
+                    userPaused = true
+                } else {
+                    let pos = midiPausedPosition
+                    if let pos { player.currentPosition = pos }
+                    player.play { [weak self] in
+                        Task { @MainActor [weak self] in self?.midiFinished(player) }
+                    }
+                    if let pos { player.currentPosition = pos }
+                    isPlaying = true
+                    userPaused = false
+                    midiPausedPosition = nil
+                }
             }
         case .none:
             break
@@ -320,16 +350,86 @@ final class PlayerState: NSObject, ObservableObject {
     }
 
     private func startEngineD(url: URL) -> Bool {
-        guard let player = try? AVMIDIPlayer(contentsOf: url, soundBankURL: nil)
-        else { return false }
-        midiPlayer = player
-        midiPausedPosition = nil
-        let d = player.duration
-        if d.isFinite, d > 0 { duration = d }
-        player.prepareToPlay()
-        player.play { [weak self] in
-            Task { @MainActor [weak self] in self?.midiFinished(player) }
+        var player: AVMIDIPlayer?
+        if let p = try? AVMIDIPlayer(contentsOf: url, soundBankURL: nil) {
+            player = p
+        } else if url.pathExtension.lowercased() == "rmi",
+                  let data = try? Data(contentsOf: url),
+                  let smf = AudioFormats.unwrapRMID(data),
+                  let p = try? AVMIDIPlayer(data: smf, soundBankURL: nil) {
+            player = p
         }
+        if let player {
+            midiPlayer = player
+            midiPausedPosition = nil
+            let d = player.duration
+            if d.isFinite, d > 0 { duration = d }
+            player.prepareToPlay()
+            player.play { [weak self] in
+                Task { @MainActor [weak self] in self?.midiFinished(player) }
+            }
+            return true
+        }
+        return startEngineE(url: url)
+    }
+
+    private func startEngineE(url: URL) -> Bool {
+        var data: Data
+        if url.pathExtension.lowercased() == "rmi",
+           let raw = try? Data(contentsOf: url),
+           let smf = AudioFormats.unwrapRMID(raw) {
+            data = smf
+        } else if let d = try? Data(contentsOf: url) {
+            data = d
+        } else {
+            return false
+        }
+        guard FileManager.default.fileExists(atPath: gsBankURL.path) else { return false }
+
+        let sampler = AVAudioUnitSampler()
+        do {
+            try sampler.loadSoundBankInstrument(at: gsBankURL, program: 0,
+                                                bankMSB: 0x79, bankLSB: 0)
+        } catch {
+            return false
+        }
+        let engine = AVAudioEngine()
+        engine.attach(sampler)
+        engine.connect(sampler, to: engine.mainMixerNode, format: nil)
+        engine.mainMixerNode.outputVolume = Float(volume)
+
+        let sequencer = AVAudioSequencer(audioEngine: engine)
+        do {
+            try sequencer.load(from: data, options: [.smf_ChannelsToTracks])
+        } catch {
+            do {
+                try sequencer.load(from: data, options: [])
+            } catch {
+                return false
+            }
+        }
+        var endSeconds: TimeInterval = 0
+        for track in sequencer.tracks {
+            track.destinationAudioUnit = sampler
+            let len = track.lengthInSeconds
+            if len.isFinite, len > endSeconds { endSeconds = len }
+        }
+        if endSeconds > 0 { duration = endSeconds }
+        sequencer.prepareToPlay()
+        do {
+            try engine.start()
+            try sequencer.start()
+        } catch {
+            return false
+        }
+
+        eEngine = engine
+        eSampler = sampler
+        eSequencer = sequencer
+        midiPlayer = nil
+        midiSampler = true
+        midiPausedPosition = nil
+        midiEnded = false
         return true
     }
 
@@ -337,7 +437,7 @@ final class PlayerState: NSObject, ObservableObject {
         guard midiPlayer === player, activeEngine == .midi,
               currentTrack != nil else { return }
         if userPaused || midiPausedPosition != nil { return }
-        if duration <= 0 || currentTime >= max(0, duration - 0.5) {
+        if duration <= 0 || player.currentPosition >= max(0, duration - 0.5) {
             trackEnded()
         }
     }
@@ -410,11 +510,21 @@ final class PlayerState: NSObject, ObservableObject {
             engineCEnded = false
             engineCLock.unlock()
         case .midi:
-            guard let player = midiPlayer else { return }
-            player.currentPosition = clamped
-            currentTime = clamped
-            if !player.isPlaying && userPaused {
-                midiPausedPosition = clamped
+            if midiSampler {
+                guard let seq = eSequencer else { return }
+                seq.currentPositionInSeconds = clamped
+                currentTime = clamped
+                if !seq.isPlaying || userPaused {
+                    midiPausedPosition = clamped
+                }
+                midiEnded = false
+            } else {
+                guard let player = midiPlayer else { return }
+                player.currentPosition = clamped
+                currentTime = clamped
+                if !player.isPlaying && userPaused {
+                    midiPausedPosition = clamped
+                }
             }
         case .none:
             break
@@ -458,7 +568,20 @@ final class PlayerState: NSObject, ObservableObject {
                 trackEnded()
             }
         case .midi:
-            if let player = midiPlayer {
+            if midiSampler {
+                guard let seq = eSequencer, let engine = eEngine,
+                      engine.isRunning else { return }
+                let s = seq.currentPositionInSeconds
+                if s.isFinite, s >= 0, s <= duration + 10.0 {
+                    currentTime = min(s, duration)
+                }
+                let saneEnd = duration > 0 && s >= max(0, duration - 0.5)
+                    && s <= duration + 10.0
+                if !midiEnded && saneEnd && isPlaying && !userPaused {
+                    midiEnded = true
+                    trackEnded()
+                }
+            } else if let player = midiPlayer, player.isPlaying {
                 currentTime = player.currentPosition
             }
         case .none:
@@ -472,6 +595,7 @@ final class PlayerState: NSObject, ObservableObject {
         audioEngine?.mainMixerNode.outputVolume = Float(volume)
         fallbackPlayer?.volume = Float(volume)
         engineC?.mainMixerNode.outputVolume = Float(volume)
+        eEngine?.mainMixerNode.outputVolume = Float(volume)
     }
 
     private func teardownPlayback() {
@@ -504,6 +628,14 @@ final class PlayerState: NSObject, ObservableObject {
             engineCScratch = nil
         }
         pullDecoder = nil
+
+        if let seq = eSequencer { seq.stop() }
+        if let engine = eEngine { engine.stop() }
+        eSequencer = nil
+        eSampler = nil
+        eEngine = nil
+        midiSampler = false
+        midiEnded = false
 
         midiPlayer?.stop()
         midiPlayer = nil

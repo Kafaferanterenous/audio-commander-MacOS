@@ -39,6 +39,7 @@ lipo -create "$BUILD/x86_64/${APP_NAME}" "$BUILD/arm64/${APP_NAME}" \
 cp Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns" 2>/dev/null || true
 codesign --force --sign - "$APP" 2>/dev/null || true
+touch "$APP/Contents" "$APP"
 
 echo "--- Build complete: $APP ---"
 lipo -info "$APP/Contents/MacOS/${APP_NAME}" | sed 's/^/Architectures: /'

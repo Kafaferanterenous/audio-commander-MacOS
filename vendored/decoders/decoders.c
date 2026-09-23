@@ -7,6 +7,9 @@
 #include "stb_vorbis.c" /* declarations only (no STB_VORBIS_IMPLEMENTATION here) */
 
 #define OUT_RATE 44100
+/* DUMB delta_time = 65536 (units/sec) / output rate: fixed-point seconds per
+ * output sample. The reciprocal here used to slow tracker playback ~2.2x. */
+#define DUMB_DELTA (65536.0f / (float)OUT_RATE)
 
 typedef struct dec_decoder dec_decoder;
 
@@ -417,7 +420,7 @@ long dec_render(void *vd, float *out, long frames) {
             short *tmp = (short *)malloc((size_t)frames * 2 * sizeof(short));
             if (!tmp) return 0;
             long n = duh_render(d->sr, 16, 0, 1.0f,
-                                (float)OUT_RATE / 65536.0f, frames, tmp);
+                                DUMB_DELTA, frames, tmp);
             long i;
             for (i = 0; i < n; i++) {
                 out[i * 2] = tmp[i * 2] / 32768.0f;
@@ -463,7 +466,7 @@ int dec_seek(void *vd, double seconds) {
                 long want = target - skipped;
                 long c = want > CHUNK ? CHUNK : want;
                 long n = duh_render(d->sr, 16, 0, 0.0f,
-                                    (float)OUT_RATE / 65536.0f, c, scratch);
+                                    DUMB_DELTA, c, scratch);
                 if (n <= 0) break;
                 skipped += n;
             }

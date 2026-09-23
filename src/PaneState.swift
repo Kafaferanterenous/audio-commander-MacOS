@@ -237,10 +237,18 @@ final class PaneState: ObservableObject {
             }.value
         case .midi:
             return await Task.detached(priority: .utility) {
-                guard let p = try? AVMIDIPlayer(contentsOf: url, soundBankURL: nil)
-                else { return nil }
-                let d = p.duration
-                return d.isFinite && d > 0.05 ? d : nil
+                guard let raw = try? Data(contentsOf: url) else { return nil }
+                let smf: Data
+                if url.pathExtension.lowercased() == "rmi",
+                   let r = AudioFormats.unwrapRMID(raw) {
+                    smf = r
+                } else {
+                    smf = raw
+                }
+                guard let d = AudioFormats.smfDuration(from: smf), d > 0.05 else {
+                    return nil
+                }
+                return d
             }.value
         case .native:
             let asset = AVURLAsset(url: url)
