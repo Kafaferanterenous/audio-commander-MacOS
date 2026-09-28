@@ -1,6 +1,22 @@
 import Foundation
 @preconcurrency import AVFoundation
 
+enum RepeatMode: Int, CaseIterable {
+    case off, all, one
+
+    var next: RepeatMode {
+        RepeatMode(rawValue: (rawValue + 1) % 3) ?? .off
+    }
+
+    var systemImage: String {
+        switch self {
+        case .off: return "repeat"
+        case .all: return "repeat"
+        case .one: return "repeat.1"
+        }
+    }
+}
+
 @MainActor
 final class PlayerState: NSObject, ObservableObject {
     @Published private(set) var currentTrack: FileItem?
@@ -12,6 +28,22 @@ final class PlayerState: NSObject, ObservableObject {
         didSet { applyVolume(); UserDefaults.standard.set(volume, forKey: "ac_volume") }
     }
     @Published var playbackNote: String?
+
+    @Published var shuffleMode: Bool = false {
+        didSet {
+            guard shuffleMode != oldValue else { return }
+            UserDefaults.standard.set(shuffleMode, forKey: "ac_shuffle")
+            reshuffleKeepingCurrent()
+        }
+    }
+
+    @Published var repeatMode: RepeatMode = .off {
+        didSet {
+            guard repeatMode != oldValue else { return }
+            UserDefaults.standard.set(repeatMode.rawValue, forKey: "ac_repeat")
+            publishNowPlaying()
+        }
+    }
 
     @Published var sleepMinutes: Int = 0 {
         didSet {
@@ -56,6 +88,7 @@ final class PlayerState: NSObject, ObservableObject {
     private let gsBankURL = URL(fileURLWithPath:
         "/System/Library/Components/CoreAudio.component/Contents/Resources/gs_instruments.dls")
 
+    private var baseQueue: [FileItem] = []
     private var queue: [FileItem] = []
     private var queueIndex = 0
     private var userPaused = false
@@ -63,6 +96,10 @@ final class PlayerState: NSObject, ObservableObject {
     private var ticker: Timer?
     private var sleepActivity: NSObjectProtocol?
     private var sleepTimer: Timer?
+
+    var hasNext: Bool { queueIndex + 1 < queue.count || repeatMode == .all }
+    var hasPrevious: Bool { queue.count > 1 || currentTime > 0.5 }
+    var isActivelyPlaying: Bool { isPlaying && !userPaused }
 
     private func setPreventSleep(_ active: Bool) {
         if active, sleepActivity == nil {
@@ -82,6 +119,52 @@ final class PlayerState: NSObject, ObservableObject {
         let stored = UserDefaults.standard.double(forKey: "ac_volume")
         if stored > 0 { volume = stored }
         sleepMinutes = UserDefaults.standard.integer(forKey: "ac_sleep_min")
+        shuffleMode = UserDefaults.standard.bool(forKey: "ac_shuffle")
+        repeatMode = RepeatMode(rawValue: UserDefaults.standard.integer(forKey: "ac_repeat")) ?? .off
+    }
+
+    /// Builds the play order. Shuffled starts at the requested track and
+    /// permutes everything after it, so the click that started playback is
+    /// always heard first.
+    private func makePlayOrder(from items: [FileItem], startAt index: Int) -> [FileItem] {
+        guard shuffleMode, items.count > 1 else { return items }
+        let first = min(max(0, index), items.count - 1)
+        var rest = Array(items.indices.filter { $0 != first })
+        rest.shuffle()
+        return [items[first]] + rest.map { items[$0] }
+    }
+
+    /// Re-applies shuffle without interrupting the current track: it is
+    /// pinned to the front and the remainder is re-permuted.
+    private func reshuffleKeepingCurrent() {
+        guard !baseQueue.isEmpty else { return }
+        guard shuffleMode else {
+            if let current = currentTrack,
+               let restored = baseQueue.firstIndex(where: { $0.id == current.id }) {
+                queue = baseQueue
+                queueIndex = restored
+            } else {
+                queue = baseQueue
+                queueIndex = min(queueIndex, max(0, baseQueue.count - 1))
+            }
+            publishNowPlaying()
+            return
+        }
+        var currentId = currentTrack?.id
+        if currentId == nil, baseQueue.indices.contains(queueIndex) {
+            currentId = baseQueue[queueIndex].id
+        }
+        let remaining = baseQueue.filter { $0.id != currentId }
+        var shuffledRest = remaining
+        shuffledRest.shuffle()
+        if let currentId, let item = baseQueue.first(where: { $0.id == currentId }) {
+            queue = [item] + shuffledRest
+            queueIndex = 0
+        } else {
+            queue = baseQueue.shuffled()
+            queueIndex = 0
+        }
+        publishNowPlaying()
     }
 
     private func rescheduleSleepTimer() {
@@ -102,8 +185,13 @@ final class PlayerState: NSObject, ObservableObject {
 
     func playQueue(items: [FileItem], index: Int, paneLabel: String) {
         guard !items.isEmpty else { return }
-        queue = items
-        queueIndex = min(max(0, index), items.count - 1)
+        baseQueue = items
+        queue = makePlayOrder(from: items, startAt: index)
+        if shuffleMode {
+            queueIndex = 0 // the clicked track was pinned to the front
+        } else {
+            queueIndex = min(max(0, index), items.count - 1)
+        }
         sourcePane = paneLabel
         playCurrent()
     }
@@ -179,6 +267,7 @@ final class PlayerState: NSObject, ObservableObject {
         case .none:
             break
         }
+        publishNowPlaying()
     }
 
     func stopPlayback() {
@@ -187,6 +276,7 @@ final class PlayerState: NSObject, ObservableObject {
         isPlaying = false
         currentTime = 0
         duration = 0
+        baseQueue.removeAll()
         queue.removeAll()
         queueIndex = 0
         failuresInARow = 0
@@ -196,11 +286,19 @@ final class PlayerState: NSObject, ObservableObject {
         if sleepMinutes != 0 {
             sleepMinutes = 0
         }
+        NowPlaying.clear()
     }
 
     func next() {
         guard !queue.isEmpty else { return }
-        queueIndex = (queueIndex + 1) % queue.count
+        guard queueIndex + 1 < queue.count else {
+            guard repeatMode != .off else { return }
+            queueIndex = 0
+            if shuffleMode { reshuffleKeepingCurrent() }
+            playCurrent()
+            return
+        }
+        queueIndex += 1
         playCurrent()
     }
 
@@ -261,6 +359,14 @@ final class PlayerState: NSObject, ObservableObject {
         userPaused = false
         setPreventSleep(true)
         startTicker()
+        publishNowPlaying()
+    }
+
+    private func publishNowPlaying() {
+        NowPlaying.publish(track: currentTrack, elapsed: currentTime, duration: duration,
+                           rate: isPlaying && !userPaused ? 1.0 : 0.0,
+                           sourcePane: sourcePane,
+                           hasNext: hasNext, hasPrevious: hasPrevious)
     }
 
     private func startEngineA(url: URL) -> Bool {
@@ -507,6 +613,7 @@ final class PlayerState: NSObject, ObservableObject {
 
     private func handleUnplayableCurrent() {
         teardownPlayback()
+        NowPlaying.clear()
         failuresInARow += 1
         let name = currentTrack?.name ?? "file"
         if failuresInARow >= max(1, queue.count) {
@@ -521,11 +628,24 @@ final class PlayerState: NSObject, ObservableObject {
 
     private func trackEnded() {
         guard currentTrack != nil else { return }
-        if queueIndex + 1 < queue.count {
-            queueIndex += 1
+        switch repeatMode {
+        case .one:
             playCurrent()
-        } else {
-            stopPlayback()
+        case .all:
+            if queueIndex + 1 < queue.count {
+                queueIndex += 1
+            } else {
+                queueIndex = 0
+                if shuffleMode { reshuffleKeepingCurrent() }
+            }
+            playCurrent()
+        case .off:
+            if queueIndex + 1 < queue.count {
+                queueIndex += 1
+                playCurrent()
+            } else {
+                stopPlayback()
+            }
         }
     }
 
@@ -581,6 +701,7 @@ final class PlayerState: NSObject, ObservableObject {
         case .none:
             break
         }
+        publishNowPlaying()
     }
 
     private func startTicker() {
@@ -639,6 +760,7 @@ final class PlayerState: NSObject, ObservableObject {
         case .none:
             break
         }
+        NowPlaying.tickPosition(elapsed: currentTime, duration: duration)
     }
 
     // MARK: - Teardown

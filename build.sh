@@ -10,7 +10,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$BUILD/x86_64" "$BUILD
          "$BUILD/x86_64/obj" "$BUILD/arm64/obj"
 
 CC="xcrun cc"
-CFLAGS="-O2 -w -mmacosx-version-min=13.0 -I vendored/dumb/include -I vendored/stb -I vendored/decoders"
+CFLAGS="-O2 -w -mmacosx-version-min=13.0 -DENABLE_LEGACY -I vendored/dumb/include -I vendored/stb -I vendored/decoders -I vendored/wavpack/include -I vendored/wavpack/src"
 CSRCS=$(find vendored -name '*.c')
 
 for ARCH in x86_64 arm64; do

@@ -14,7 +14,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         true
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated { NowPlaying.clear() }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        MainActor.assumeIsolated { NowPlaying.installCommands() }
         DispatchQueue.main.async { [weak self] in
             guard let self, let win = NSApp.windows.first else { return }
             win.delegate = self
@@ -101,8 +106,10 @@ final class CommanderStore: ObservableObject {
     @Published var activeSide = "left"
     @Published private(set) var left: PaneState
     @Published private(set) var right: PaneState
+    @Published var drawerOpen = false
     let player = PlayerState()
     let transfer = TransferManager()
+    let playlists = PlaylistStore.shared
 
     var activePane: PaneState { activeSide == "right" ? right : left }
 
@@ -124,7 +131,50 @@ final class CommanderStore: ObservableObject {
                 guard let pane = pane else { return }
                 self?.activeSide = pane.side
             }
+            pane.onPlaylistOpen = { [weak self] url in
+                self?.openPlaylistFile(url)
+            }
         }
+    }
+
+    /// A playlist clicked in a pane is copied into the library so it can be
+    /// edited here; the original file on disk is never modified.
+    func openPlaylistFile(_ url: URL) {
+        let name = url.deletingPathExtension().lastPathComponent
+        if let existing = playlists.playlists.first(where: {
+            $0.entries.contains { $0.url == url } && $0.name == name
+        }) ?? playlists.playlists.first(where: {
+            $0.id.lastPathComponent == url.lastPathComponent
+        }) {
+            playlists.selectedID = existing.id
+        } else if let imported = playlists.importPlaylist(from: url) {
+            playlists.statusMessage = AppSettings.shared.tf("playlistImported",
+                                                           imported.name, imported.entries.count)
+        } else {
+            playlists.statusMessage = AppSettings.shared.tf("playlistBad", url.lastPathComponent)
+        }
+        drawerOpen = true
+    }
+
+    /// Starts playback of a library playlist, honouring shuffle and repeat.
+    func play(_ playlist: Playlist) {
+        guard let payload = playlists.playableItems(from: playlist) else {
+            playlists.statusMessage = AppSettings.shared.t("playlistNoPlayable")
+            return
+        }
+        player.playQueue(items: payload.items, index: payload.startIndex,
+                         paneLabel: playlist.name)
+        drawerOpen = false
+    }
+
+    func addSelection(to playlist: Playlist) {
+        let items = activePane.selectedItems
+        guard !items.isEmpty else {
+            activePane.statusMessage = AppSettings.shared.t("selectFirst")
+            return
+        }
+        playlists.append(items: items, to: playlist.id)
+        playlists.statusMessage = AppSettings.shared.tf("playlistAdded", items.count, playlist.name)
     }
 
     // Single-click behavior: click plays; click again stops;
@@ -228,6 +278,13 @@ struct ContentView: View {
             Divider().overlay(settings.palette.divider)
             PlaybackBar(player: store.player)
         }
+        .overlay(alignment: .trailing) {
+            if store.drawerOpen {
+                InspectorDrawer(store: store, isOpen: $store.drawerOpen)
+                    .transition(.move(edge: .trailing))
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: store.drawerOpen)
         .overlay {
             if let progress = store.transfer.progress {
                 TransferOverlay(transfer: store.transfer, progress: progress)
@@ -279,6 +336,19 @@ struct ContentView: View {
     private var topButtons: some View {
         ZStack {
             HStack {
+                Button {
+                    store.drawerOpen.toggle()
+                } label: {
+                    Image(systemName: "sidebar.right")
+                        .font(.system(size: 13).weight(.medium))
+                        .padding(6)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .foregroundStyle(store.drawerOpen ? settings.palette.accent : .primary)
+                        .help(settings.t("drawerTitle"))
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, 12)
+                .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
                 Spacer()
                 Button {
                     showSettings = true
@@ -305,6 +375,440 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .offset(y: 26)
             .shadow(color: .black.opacity(0.4), radius: 3, y: 1)
+        }
+    }
+}
+
+// MARK: - Inspector drawer
+
+enum DrawerTab: String, CaseIterable, Identifiable {
+    case library, effects, utilities
+    var id: String { rawValue }
+    var titleKey: String {
+        switch self {
+        case .library: return "drawerLibrary"
+        case .effects: return "drawerEffects"
+        case .utilities: return "drawerUtilities"
+        }
+    }
+}
+
+/// Right-side overlay drawer (Xcode Inspector style). It floats OVER the right
+/// pane so the two panes never reflow, each tab scrolls on its own, and a
+/// single toggle opens/closes it.
+struct InspectorDrawer: View {
+    @ObservedObject var store: CommanderStore
+    @EnvironmentObject private var settings: AppSettings
+    @Binding var isOpen: Bool
+    @State private var tab: DrawerTab = .library
+    @State private var newName = ""
+    @State private var isNaming = false
+    @State private var isRenaming = false
+    @State private var pendingDelete: Playlist?
+
+    private var playlists: PlaylistStore { store.playlists }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider().overlay(settings.palette.divider)
+            Picker("", selection: $tab) {
+                ForEach(DrawerTab.allCases) { t in
+                    Text(settings.t(t.titleKey)).tag(t)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 12)
+            .padding(.bottom, 10)
+
+            switch tab {
+            case .library: libraryTab
+            case .effects: placeholder(settings.t("effectsSoon"))
+            case .utilities: utilitiesTab
+            }
+
+            if let status = playlists.statusMessage {
+                Text(status)
+                    .font(settings.scaled(10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+            }
+        }
+        .frame(width: 320)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .leading) {
+            Rectangle().fill(settings.palette.divider).frame(width: 1)
+        }
+        .shadow(color: .black.opacity(0.35), radius: 12, x: -4, y: 0)
+        .confirmationDialog(
+            settings.t("deletePlaylist"),
+            isPresented: Binding(get: { pendingDelete != nil },
+                                 set: { if !$0 { pendingDelete = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button(settings.t("deletePlaylist"), role: .destructive) {
+                if let playlist = pendingDelete { playlists.delete(playlist) }
+                pendingDelete = nil
+            }
+            Button(settings.t("close"), role: .cancel) { pendingDelete = nil }
+        } message: {
+            Text(settings.tf("deletePlaylistConfirm", pendingDelete?.name ?? ""))
+        }
+    }
+
+    private var header: some View {
+        HStack {
+            Text(settings.t("drawerTitle"))
+                .font(settings.scaled(13).weight(.semibold))
+            Spacer()
+            Button {
+                isOpen = false
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help(settings.t("close"))
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+    }
+
+    // MARK: Library
+
+    private var libraryTab: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Button {
+                    isNaming = true
+                } label: {
+                    Label(settings.t("newPlaylist"), systemImage: "plus")
+                        .font(settings.scaled(11))
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    importPlaylist()
+                } label: {
+                    Label(settings.t("importM3U"), systemImage: "square.and.arrow.down")
+                        .font(settings.scaled(11))
+                }
+                .buttonStyle(.bordered)
+
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+
+            if isNaming {
+                HStack(spacing: 6) {
+                    TextField(settings.t("playlistName"), text: $newName)
+                        .textFieldStyle(.roundedBorder)
+                        .font(settings.scaled(11))
+                        .onSubmit(commitNew)
+                    Button(action: commitNew) {
+                        Image(systemName: "checkmark")
+                    }
+                    .buttonStyle(.borderless)
+                    Button {
+                        isNaming = false
+                        newName = ""
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .padding(.horizontal, 12)
+            }
+
+            if playlists.playlists.isEmpty {
+                placeholder(settings.t("noPlaylists"))
+            } else {
+                playlistList
+                Divider().overlay(settings.palette.divider)
+                entryList
+                actions
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private func commitNew() {
+        if playlists.create(named: newName) != nil {
+            newName = ""
+            isNaming = false
+        }
+    }
+
+    private var playlistList: some View {
+        ScrollView {
+            VStack(spacing: 2) {
+                ForEach(playlists.playlists) { playlist in
+                    let isSelected = playlist.id == playlists.selected?.id
+                    HStack(spacing: 6) {
+                        Image(systemName: isSelected ? "music.note.list" : "music.note.list")
+                            .foregroundStyle(isSelected ? settings.palette.accent : .secondary)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(playlist.name)
+                                .font(settings.scaled(12).weight(isSelected ? .semibold : .regular))
+                                .lineLimit(1)
+                            Text(subtitle(for: playlist))
+                                .font(settings.scaled(9))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        Button {
+                            pendingDelete = playlist
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.system(size: 10))
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(.secondary)
+                        .help(settings.t("deletePlaylist"))
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .background(isSelected ? settings.palette.accent.opacity(0.14) : .clear,
+                                in: RoundedRectangle(cornerRadius: 6))
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        playlists.selectedID = playlist.id
+                        isRenaming = false
+                    }
+                    .contextMenu {
+                        Button(settings.t("play")) { store.play(playlist) }
+                        Button(settings.t("renamePlaylist")) {
+                            newName = playlist.name
+                            isRenaming = true
+                            isNaming = false
+                        }
+                        Button(settings.t("revealInFinder")) {
+                            NSWorkspace.shared.activateFileViewerSelecting([playlist.id])
+                        }
+                        Divider()
+                        Button(settings.t("deletePlaylist"), role: .destructive) {
+                            pendingDelete = playlist
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 8)
+        }
+        .frame(maxHeight: 150)
+    }
+
+    private func subtitle(for playlist: Playlist) -> String {
+        var parts = [settings.tf("audioN", playlist.playableCount)]
+        if let total = playlist.totalDuration {
+            parts.append(AudioFormats.durationText(total))
+        }
+        if playlist.missingCount > 0 {
+            parts.append(settings.tf("missingN", playlist.missingCount))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var entryList: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                if isRenaming {
+                    HStack(spacing: 6) {
+                        TextField(settings.t("playlistName"), text: $newName)
+                            .textFieldStyle(.roundedBorder)
+                            .font(settings.scaled(11))
+                            .onSubmit {
+                                if let playlist = playlists.selected {
+                                    playlists.rename(playlist, to: newName)
+                                }
+                                isRenaming = false
+                            }
+                        Button {
+                            if let playlist = playlists.selected {
+                                playlists.rename(playlist, to: newName)
+                            }
+                            isRenaming = false
+                        } label: {
+                            Image(systemName: "checkmark")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.bottom, 4)
+                }
+
+                if let playlist = playlists.selected {
+                    if playlist.entries.isEmpty {
+                        Text(settings.t("playlistEmpty"))
+                            .font(settings.scaled(11))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                    } else {
+                        ForEach(Array(playlist.entries.enumerated()), id: \.element.id) { index, entry in
+                            entryRow(index: index, entry: entry, playlist: playlist)
+                        }
+                    }
+                } else {
+                    Text(settings.t("selectPlaylistPrompt"))
+                        .font(settings.scaled(11))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                }
+            }
+        }
+        .frame(maxHeight: .infinity)
+    }
+
+    private func entryRow(index: Int, entry: PlaylistEntry, playlist: Playlist) -> some View {
+        let isCurrent = store.player.currentTrack?.id == entry.id
+        let playable = entry.isPlayable && !entry.isMissing
+        return HStack(spacing: 6) {
+            Text("\(index + 1)")
+                .font(settings.scaled(9).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 20, alignment: .trailing)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(entry.displayTitle)
+                    .font(settings.scaled(11).weight(isCurrent ? .semibold : .regular))
+                    .lineLimit(1)
+                    .strikethrough(entry.isMissing, color: .secondary)
+                HStack(spacing: 4) {
+                    Text(AudioFormats.durationText(entry.duration))
+                    if entry.isMissing {
+                        Text(settings.t("missingFile"))
+                            .foregroundStyle(.red.opacity(0.85))
+                    } else if !entry.isPlayable {
+                        Text(settings.t("unsupportedFile"))
+                            .foregroundStyle(.orange.opacity(0.9))
+                    }
+                }
+                .font(settings.scaled(9))
+                .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if playable {
+                Button {
+                    playEntry(entry, in: playlist)
+                } label: {
+                    Image(systemName: "play.fill").font(.system(size: 9))
+                }
+                .buttonStyle(.borderless)
+                .help(settings.t("playFromHere"))
+            }
+            Button {
+                playlists.remove(entry: entry, from: playlist.id)
+            } label: {
+                Image(systemName: "minus.circle").font(.system(size: 10))
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help(settings.t("removeEntry"))
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(isCurrent ? settings.palette.accent.opacity(0.12) : .clear)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if playable { playEntry(entry, in: playlist) }
+        }
+    }
+
+    private func playEntry(_ entry: PlaylistEntry, in playlist: Playlist) {
+        guard let payload = playlists.playableItems(from: playlist) else {
+            playlists.statusMessage = settings.t("playlistNoPlayable")
+            return
+        }
+        let index = payload.items.firstIndex { $0.id == entry.id } ?? 0
+        store.player.playQueue(items: payload.items, index: index, paneLabel: playlist.name)
+        store.drawerOpen = false
+    }
+
+    private var actions: some View {
+        HStack(spacing: 6) {
+            Button {
+                if let playlist = playlists.selected { store.play(playlist) }
+            } label: {
+                Label(settings.t("play"), systemImage: "play.fill")
+                    .font(settings.scaled(11))
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(playlists.selected?.playableCount ?? 0 == 0)
+
+            Button {
+                if let playlist = playlists.selected { store.addSelection(to: playlist) }
+            } label: {
+                Label(settings.t("addSelection"), systemImage: "plus.square.on.square")
+                    .font(settings.scaled(11))
+            }
+            .buttonStyle(.bordered)
+
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+    }
+
+    // MARK: Utilities
+
+    private var utilitiesTab: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(settings.t("sleepTimerLabel"))
+                    .font(settings.scaled(13))
+                Picker("", selection: Binding(
+                    get: { store.player.sleepMinutes },
+                    set: { store.player.sleepMinutes = $0 })) {
+                    ForEach(SleepTimerOptions.allCases) { opt in
+                        Text(opt.label(settings: settings)).tag(opt.minutes)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            Divider().overlay(settings.palette.divider)
+            Text(settings.t("utilitiesSoon"))
+                .font(settings.scaled(11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private func placeholder(_ text: String) -> some View {
+        Text(text)
+            .font(settings.scaled(11))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(12)
+    }
+
+    private func importPlaylist() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = ["m3u", "m3u8"].compactMap { UTType(filenameExtension: $0) }
+        panel.message = settings.t("importM3U")
+        panel.begin { response in
+            guard response == .OK else { return }
+            for url in panel.urls {
+                if let imported = self.playlists.importPlaylist(from: url) {
+                    self.playlists.statusMessage = self.settings.tf("playlistImported",
+                                                                   imported.name,
+                                                                   imported.entries.count)
+                }
+            }
         }
     }
 }
@@ -454,20 +958,6 @@ struct SettingsSheet: View {
                     .font(settings.scaled(11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(settings.t("sleepTimerLabel"))
-                    .font(settings.scaled(13))
-                Picker("", selection: Binding(
-                    get: { store.player.sleepMinutes },
-                    set: { store.player.sleepMinutes = $0 })) {
-                    ForEach(SleepTimerOptions.allCases) { opt in
-                        Text(opt.label(settings: settings)).tag(opt.minutes)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: 220, alignment: .leading)
             }
 
             Divider()
@@ -672,6 +1162,24 @@ struct PlaybackBar: View {
     private var transportButtons: some View {
         HStack(spacing: 6) {
             Button {
+                player.shuffleMode.toggle()
+            } label: {
+                Image(systemName: "shuffle")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(player.shuffleMode ? settings.palette.accent : .secondary)
+            .help(player.shuffleMode ? settings.t("shuffleOn") : settings.t("shuffleOff"))
+
+            Button {
+                player.repeatMode = player.repeatMode.next
+            } label: {
+                Image(systemName: player.repeatMode.systemImage)
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(player.repeatMode == .off ? Color.secondary : settings.palette.accent)
+            .help(settings.t(repeatHelpKey))
+
+            Button {
                 player.previous()
             } label: {
                 Image(systemName: "backward.fill")
@@ -696,6 +1204,14 @@ struct PlaybackBar: View {
             }
             .buttonStyle(.borderless)
             .help(settings.t("nextHelp"))
+        }
+    }
+
+    private var repeatHelpKey: String {
+        switch player.repeatMode {
+        case .off: return "repeatOff"
+        case .all: return "repeatAll"
+        case .one: return "repeatOne"
         }
     }
 }

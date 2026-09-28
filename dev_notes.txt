@@ -603,3 +603,269 @@ only tiny transport toggles (shuffle/repeat/sleep) stay on the bar.
   Test: set 15min, play, set system clock forward 15m (or wait) -> playback
   stops and picker resets to Off; set timer then stop manually -> picker
   shows Off; relaunch -> last choice remembered.
+
+=== 2026-09-23 (part 16) — UPLOADED 0.6.1 (b22) ===
+- git commit 9f00fec pushed to main (c4f9a9b..9f00fec): all b17-b22 work +
+  tools/fixtures/test_adpcm.voc committed as regression fixture.
+- Release v0.6.1 created: AudioCommander-0.6.1-b22-MacOS.zip (universal
+  app, zip 1.52 MB). Notes list the 0.6.1 delta.
+- NOTE: ditto refused ("Cannot get the real path") crossing volume
+  firmlinks from dist/ into /var/folders; used `zip -rqy` instead - worked.
+- AGENTS.md project map updated to release v0.6.1.
+- NOT yet on the 25-item tracker: #6 AC3/EAC3 next.
+
+=== 2026-09-23 (part 17) — SESSION WRAP + DRAWER DECISION + goals.txt ===
+- USER: wants ONE clean drawer design, not several panels. DECISION made:
+  single right-side OVERLAY drawer (Inspector-style, floats over right
+  pane, no pane reflow), segmented tab bar inside (Library / Effects /
+  Utilities), each tab scrolls; mini player = floating window; media keys
+  = global; only tiny transport toggles on the bar. Build skeleton when
+  first drawer feature (#10) lands. Full text in goals.txt.
+- NEW FILE: goals.txt (this session) = the 25-item merged backlog with
+  status (1-5 DONE in 0.6.1, 6-25 remaining), permanently-parked list,
+  drawer design, other open items. Single source of truth for goals going
+  forward (dev_notes keeps the engineering history).
+- Build state: b22 (v0.6.1) pushed + released. Working tree now has ONLY
+  dev_notes.txt + goals.txt changes (uncommitted).
+- STOP for today as requested. Next session: user verifies 0.6.1 on the
+  real Mac; then backlog #6 AC3/EAC3 first.
+
+=== 2026-09-28 (part 18) — BACKLOG #6 DONE: AC3/EAC3 NATIVE (b23) ===
+- #6 AC3/EAC3 20%: same discipline as #1 — PROBE FIRST, no decoder written.
+  Real Dolby streams (ffmpeg sample suite, probes only, NOT committed):
+  monsters_inc_2.0_192.ac3 (2.0 48k 192kbit, 30.016 s) and 7_pt_1.eac3
+  (7.1 48k, 94.501 s).
+  * AVAudioFile: OPENS BOTH. 1440768 frames @48k stereo / 4536064 frames @48k
+    8ch. No error, no silent-file failure.
+  * Peak scan of 20 s decoded PCM: AC3 0.32058, EAC3 0.41512 -> real audio,
+    not a zero-filled decode.
+  * afconvert AC3 -> WAVE also produced 30.010 s / 5761920 B, confirming the
+    system decoder is fully functional (not just a header accept).
+  * Content sniffing: the AC3 stream opened fine when renamed .bin
+    (AVAudioFile ignores the extension). AVPlayer is stricter — isPlayable was
+    FALSE for .bin but TRUE for .ac3/.ec3/.eac3 — which is exactly why the
+    extension list matters for the B-engine fallback.
+  * Duration probe: AVURLAsset load(.duration) = 30.016 s / 94.501 s, so the
+    PaneState native path fills in durations (no "—" cells).
+- CHANGE: FileItem.nativeExtensions += "ac3", "ec3", "eac3".
+  nonImplementedFormatsText: dropped AC3/EAC3 (also dropped the stale
+  AU/SND + VOC ADPCM entries, both already done in b18/b20).
+  Route stays .native — no C decoder work, no PullDecoder changes.
+- MULTICHANNEL: E-AC-3 7.1 plays through the native path. startEngineA
+  connects node -> mainMixer with file.processingFormat, so the mixer
+  downmixes 8ch to the 2ch device; end-to-end tap on the mixer bus showed
+  peak 0.06292 with position advancing 5.8 s — audio really reaches the
+  speakers, no dropped-to-silence or crash.
+- Info.plist 22 -> 23. NOT pushed/released.
+- TEST THE USER CAN DO: drop a .ac3 or .eac3 file in a pane — it lists, shows
+  its duration, and plays in both panes. Settings > Supported formats now
+  lists ac3/ec3/eac3 under "Native (CoreAudio)".
+- NOTE: no fixtures committed for this item — the sample streams are Dolby
+  test material from the ffmpeg suite, not ours to redistribute. Unlike
+  trackers, the native path needs no repo-side fixture; afconvert/CoreAudio
+  is the decoder.
+- Build: ./build.sh green, universal (x86_64 + arm64), 3.8 MB; app launches
+  and stays alive >12 s; clean SIGTERM.
+- NEXT: backlog #7 media keys + Now Playing (30%).
+
+=== 2026-09-28 (part 19) — BACKLOG #7 DONE: MEDIA KEYS + NOW PLAYING (b24) ===
+- #7 Media keys + NowPlay 30%: NEW FILE src/NowPlaying.swift (~150 lines,
+  no new dependencies — MediaPlayer/AVFoundation only).
+- MEDIA KEYS: MPRemoteCommandCenter targets for play, pause, togglePlayPause,
+  stop, nextTrack, previousTrack, changePlaybackPosition (scrubber),
+  skipForward/skipBackward (preferredIntervals [15]s). Installed once from
+  AppDelegate.applicationDidFinishLaunching (MainActor.assumeIsolated).
+  Commands arrive on a background queue -> each target hops to
+  Task { @MainActor in handle(action) } and returns .success immediately, so
+  the system never waits on the UI. RemoteAction is a small enum; nil-guard on
+  the two event-carrying commands (positionTime / interval) with
+  .commandFailed on a cast miss.
+- NOW PLAYING: MPNowPlayingInfoCenter publishes title (name minus extension),
+  artist = the source pane label, assetURL, externalContentIdentifier =
+  path (lets the system treat repeat-tracks as one entry), mediaType .audio,
+  playbackDuration, elapsedPlaybackTime, playbackRate, plus
+  playbackState (.playing/.paused/.stopped).
+- HOOKS: publish on playCurrent (new publishNowPlaying() helper) and on
+  togglePause/seek; a 1 Hz throttled refresh (NowPlaying.tickPosition, driven
+  from the existing 0.25 s player ticker) keeps the Control-Center scrubber
+  moving; clear on stopPlayback, on handleUnplayableCurrent and on
+  applicationWillTerminate. next/previous enablement follows the queue
+  (hasNext/hasPrevious added to PlayerState) so a single-track queue greys
+  out the skip buttons instead of looping silently.
+- GOTCHA: the .midi branch of togglePause does NOT touch userPaused, so the
+  rate in Now Playing could have gone stale; fixed by adding
+  PlayerState.isActivelyPlaying (isPlaying && !userPaused) and using it for
+  both publish and tickPosition.
+- GOTCHA: MPRemoteCommandCenter has no seekForwardPlaybackCommand /
+  seekBackwardPlaybackCommand on macOS (that is where my first build broke);
+  skipForward/skipBackward + changePlaybackPosition are the macOS set.
+- VERIFIED (standalone harness, real samples):
+  * all 9 targets register and all isEnabled flags read back true;
+    preferredIntervals stick at [15].
+  * Now Playing dict read back with all 6 keys; playbackState .playing;
+    elapsedPlaybackTime tracked a real AVAudioPlayerNode clock (published
+    2.76 s, live 8.79 s, delta 6.03 s over a 6 s wait) — so the OS is
+    genuinely driving off our published rate/duration, not a static dict.
+  * clear() -> nowPlayingInfo nil, playbackState stops reporting playing.
+  * The app itself launches, installs the commands and stays alive >20 s with
+    no crash report.
+  * NOT verifiable in this VM: physical media-key delivery (no keyboard event
+    injection, no Control Center, no Touch Bar). The OS->target dispatch is
+    Apple's; our mapping into PlayerState is the part under test.
+- Info.plist 23 -> 24. NOT pushed/released.
+- TEST THE USER CAN DO: start a track -> the Control Center / Touch Bar (or the
+  keyboard's play/pause/next/prev keys) should drive AudioCommander; the
+  Control Center widget shows the file name, scrubber and duration. With one
+  track in the queue, next/prev are disabled.
+- NEXT: backlog #8 TTA (True Audio) 35% — needs a small libtta vendored in.
+
+================================================================
+b25 — GOAL #9 SHUFFLE + REPEAT (2026-09-28)
+================================================================
+- User shelved the tracker->MP3 conversion idea and asked to continue with the
+  rest of the backlog, so I skipped #8 TTA (licensing still unresolved) and
+  implemented #9.
+- DESIGN: kept `queue` as the PLAY order and added `baseQueue` for the
+  original, untouched order. Reason: navigating a permutation is simpler and
+  less bug-prone than a second indirection layer over indices, and the
+  original order is needed to restore non-shuffle mode.
+  * makePlayOrder(from:startAt:) pins the CLICKED track to position 0 and
+    permutes the rest. Users expect to hear what they clicked first.
+  * reshuffleKeepingCurrent() re-permutes around the current track on toggle,
+    so switching shuffle on/off mid-song never interrupts playback.
+  * playQueue() resets baseQueue and rebuilds the order.
+- REPEAT: new RepeatMode enum (off/all/one) cycles off -> all -> one. Applied
+  in trackEnded() and honoured by next() at the end of the queue. hasNext now
+  reports true when repeat-all is set, so the OS/Now Playing enables the skip
+  command rather than silently doing nothing.
+- PERSIST: ac_shuffle (bool) + ac_repeat (int) in UserDefaults, restored in
+  init(), written in didSet.
+- UI: shuffle + repeat buttons on the left of the transport bar (per the
+  agreed design note: "tiny toggles may stay on the transport bar"; the drawer
+  stays free for Library/Effects/Utilities). Accent colour when active, `.1`
+  badge via repeat.1 for repeat-one. Help strings in all 4 languages
+  (en/pl/it/zh) — shuffleOn, shuffleOff, repeatOff, repeatAll, repeatOne.
+- VERIFIED (standalone harness mirroring the real logic, 23 checks):
+  * linear order preserved, next/previous correct, end-of-queue stops;
+  * repeat-all wraps, repeat-one stays on the same track;
+  * 300 shuffle trials are all exact permutations with the clicked track
+    first, and the order genuinely varies (197 distinct orders in 200 runs);
+  * toggling shuffle on preserves the current track and the index; toggling
+    off restores the original order AND the index still points at that track;
+  * shuffle + repeat-all covers all 8 tracks exactly once per cycle;
+  * single-item queue and 2-item queue don't crash; repeat cycles cleanly.
+  * NOTE: 2 checks failed on the first pass — both were wrong assertions in my
+    test, not bugs: one forgot to set repeatMode = .all, the other assumed two
+    orders were possible when pinning the clicked track leaves exactly one.
+    Fixed the assertions, not the app.
+- SMOKE: universal build green; app launches and stays alive with shuffle on +
+  repeat-one preloaded in prefs (confirms the UserDefaults restore path does
+  not crash on a non-zero repeatMode).
+- Info.plist 24 -> 25. NOT pushed/released.
+- TEST THE USER CAN DO: hit shuffle, then play a track from a list — it must
+  start with the one you clicked. Toggle shuffle mid-song: playback must not
+  stop or skip. Cycle repeat through the three icons: off, all (wraps at the
+  end of the list), one (restarts the same file). Quit and relaunch: both
+  toggles keep their state.
+- NEXT: backlog #10 Playlist .m3u (40%) — save/load parser, and per the
+  design note this is the feature that brings the drawer skeleton with it.
+
+================================================================
+b26 — GOAL #10 PLAYLIST .m3u + DRAWER SKELETON (2026-09-28)
+================================================================
+- New src/Playlist.swift: PlaylistEntry / Playlist / M3U (parse + write) and
+  PlaylistStore (a MainActor ObservableObject singleton, library lives in
+  ~/Library/Application Support/AudioCommander/Playlists).
+- PARSER handles the messy real-world variants rather than just the happy path:
+  #EXTM3U, #EXTINF:<secs>,<title> (incl. -1 => unknown), #PLAYLIST and unknown
+  # directives, bare playlists, comments, blank lines, quoted paths, UTF-8 BOM,
+  non-ASCII titles, CRLF, lone CR, percent-encoded paths (relative AND
+  absolute), Windows "C:\..." paths, and latin-1 fallback for .m3u files
+  written in an old local codepage. Entries that no longer exist are KEPT and
+  flagged missing rather than silently dropped.
+- WRITER emits #EXTM3U + #PLAYLIST, and stores paths RELATIVE when the file
+  lives under the playlist's own folder so the playlist survives being moved;
+  absolute otherwise. Verified round-trip.
+- TWO REAL BUGS found by the harness (both would have shipped):
+  * CRLF: Swift folds "\r\n" into a SINGLE Character, so
+    `split(whereSeparator: { $0 == "\n" })` never matched and EVERY Windows
+    playlist parsed as one giant line. Replaced with a scalar-level splitter
+    handling LF / CRLF / lone CR.
+  * Percent-encoded ABSOLUTE paths were never decoded, because the decode
+    fallback only ran for relative paths.
+- Drawer: right-side overlay (Xcode Inspector style) per the agreed design —
+  floats OVER the right pane so the panes never reflow, segmented tab bar,
+  each tab scrolls on its own, one toggle top-left. Tabs: Library (playlists),
+  Effects (placeholder, #16-#19 land here), Utilities (sleep timer MOVED here
+  from the Settings sheet so it has one home, not two).
+- .m3u/.m3u8 files are now listed in the panes even when "show all files" is
+  off, and clicking one imports it into the library and selects it. The file on
+  disk is never modified — the library works on its own copy.
+- Playback from a playlist goes through the normal playQueue path, so shuffle
+  and repeat apply to playlists exactly as they do to a folder.
+- All new strings in en/pl/it/zh. Dropped the deprecated
+  NSOpenPanel.allowedFileTypes for allowedContentTypes; build is warning-free.
+- VERIFIED (harness compiling the REAL src/Playlist.swift against minimal
+  FileItem/AudioFormats stubs, 80 checks): the variants listed above, the two
+  bug regressions, write output, write->read round-trip, and every PlaylistStore
+  operation (create/sanitize/dedupe/append/remove/rename/import/delete/reload)
+  including empty, header-only, nonexistent and all-missing playlists.
+- First harness pass had 6 failures: 4 were bad fixtures of mine (playlist
+  placed outside the music folder, a "missing" file I had actually created),
+  2 were the real bugs above.
+- Info.plist 25 -> 26. NOT pushed/released.
+- NEXT: #11 WavPack (45%) — official single-library codec.
+
+b27 — GOAL #11: WAVPACK (.wv)  [DONE, built, awaiting real-Mac verification]
+- LICENCE: libwavpack 5.9.0 (tag 5.9.0, github.com/dbry/WavPack) is BSD
+  2-Clause — fits the permissive-only policy. Vendored under vendored/wavpack/
+  (include/wavpack.h, src/*.c, COPYING). Built with -DENABLE_LEGACY so the old
+  32-bit reader API and v3 .wvk files work. open_filename.c is NOT vendored
+  (we feed it memory, not filenames) and threads are left off.
+- INTEGRATION (vendored/decoders/decoders.c): DEC_KIND_WAVPACK, detection on the
+  "wvpk" block magic at offset 0, in-memory WavpackStreamReader, 32-bit int ->
+  /2147483648.0 -> float, native rate -> shared 44100 resampler, mono duplicated
+  to both outputs, >2 channels downmixed to the first two, seek via
+  WavpackSeekSample64 into the existing dec_seek.
+- THREE REAL BUGS found by testing (all would have shipped):
+  1. SEEK WAS SILENTLY BROKEN. libwavpack's set_pos_abs/set_pos_rel callbacks
+     follow the fseek() convention: 0 = SUCCESS, nonzero = failure. My reader
+     returned 1 on success, so every internal find_header() call bailed out
+     immediately and WavpackSeekSample64() always returned FALSE — seeking did
+     nothing and the app would have carried on from the old position. Proven by
+     A/B test: the library's own FILE* reader seeks fine on the same file.
+  2. A CORRUPT .wv FELL THROUGH TO THE TRACKER PROBER. A 64-byte "wvpk" file
+     that WavPack rejects was handed to DUMB, whose MOD reader then read ~1 KB
+     past the end of the buffer (ASan heap-buffer-overflow, dumb_memfile_getc).
+     dec_open now returns NULL for a recognized-but-undecodable Ogg/VOC/WavPack
+     container instead of re-probing it as a module.
+  3. UPSTREAM DUMB BUG (vendored/dumb/src/helpers/memfile.c): dumb_memfile_seek
+     computed `left = size - n` with no bound check, so a seek past EOF
+     underflowed `left` to a huge size_t and every following getc() read out of
+     bounds. Added a range check that leaves the position untouched. Verified
+     behaviour-preserving: all tracker/VOC fixtures produce byte-identical
+     output with and without the patch.
+- VERIFIED (libwavpack's own encoder produced the fixtures, 134 checks, all
+  pass): 16/24-bit at 44.1 kHz are BIT-EXACT vs the source PCM; 32-bit matches
+  to float32 precision (the float output stage cannot hold 32 bits — expected);
+  float bit-exact; 220/330 Hz per channel proves channels are not swapped or
+  duplicated; 8/22.05/44.1/48/96 kHz resample to 44.1 kHz with the right frame
+  counts; 5.1 downmixes; hybrid mode decodes (140 dB SNR); seek(1.0) lands on
+  the right audio and position advances by exactly what was rendered; truncated
+  and bit-flipped files and a fake "wvpk" header all fail cleanly.
+- ALSO VERIFIED: tracker/VOC regression suite under ASan (12 checks — loud.mod,
+  loud.xm, test.s3m, both VOC fixtures decode with audio, expected duration;
+  test.mod/test.xm are silent fixtures and were confirmed silent before and
+  after the DUMB patch), and 25 Swift-side checks against the REAL src/
+  FileItem.swift + built library: .wv/.WV route to .embedded, appear in
+  `extensions`, are gone from `unsupportedExtensions`, a pane marks them as
+  audio, the format strings mention WavPack and no longer list it (or TTA) as
+  unimplemented, and a real .wv decodes to 2.000 s with working seek.
+- My first harness run reported 39 failures: 21 were stale/incorrect assertions
+  in my own test (an energy floor of 1000 that ignored 16-bit's ~1.5e-5 full
+  scale, a 2.98e-08 float32 rounding compared against a 9.31e-10 tolerance, and
+  a 8192-frame DFT fed only 2048 frames). The RMS check now derives its
+  expectation from the reference signal itself instead of a guessed peak.
+- Fixtures kept in tools/fixtures/*.wv (8 files) so the checks are repeatable.
+- Info.plist 26 -> 27. goals.txt now 10/25 (40%). NOT pushed/released.
+- NEXT: #12 Drag & drop from Finder into a pane (45%).

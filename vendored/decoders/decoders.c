@@ -5,6 +5,7 @@
 
 #include "dumb.h"
 #include "stb_vorbis.c" /* declarations only (no STB_VORBIS_IMPLEMENTATION here) */
+#include "wavpack.h"
 
 #define OUT_RATE 44100
 /* DUMB delta_time = 65536 (units/sec) / output rate: fixed-point seconds per
@@ -17,7 +18,8 @@ enum dec_kind {
     DEC_KIND_NONE = 0,
     DEC_KIND_DUMB,
     DEC_KIND_VORBIS,
-    DEC_KIND_VOC
+    DEC_KIND_VOC,
+    DEC_KIND_WAVPACK
 };
 
 struct dec_decoder {
@@ -45,6 +47,16 @@ struct dec_decoder {
     /* VOC: fully decoded at open into interleaved stereo f32 @OUT_RATE */
     float *voc_pcm;
     long voc_frames;
+
+    /* WavPack */
+    WavpackContext *wv;
+    struct wv_mem *wv_src;
+    int wv_channels;
+    unsigned int wv_rate;
+    int wv_is_float;
+    int32_t *wv_buf;       /* interleaved int32 scratch, channels * WV_CHUNK */
+    long wv_buf_frames;    /* frames currently valid in wv_buf */
+    long wv_buf_used;      /* frames already consumed from wv_buf */
 };
 
 /* ------------------------------------------------------------------ */
@@ -398,6 +410,185 @@ static long vorbis_fill(dec_decoder *d, float *out, long frames) {
 }
 
 /* ------------------------------------------------------------------ */
+/* WavPack (libwavpack, BSD 2-clause - vendored under vendored/wavpack) */
+/* ------------------------------------------------------------------ */
+
+#define WV_CHUNK 2048  /* frames decoded per library call */
+
+/* Read-only memory block exposed to libwavpack as a WavpackStreamReader, so
+   the whole file can be decoded from a mapped Data buffer with no temp file. */
+struct wv_mem {
+    const unsigned char *data;
+    long size;
+    long pos;
+};
+
+static int32_t wv_read_bytes(void *id, void *data, int32_t bcount) {
+    struct wv_mem *r = (struct wv_mem *)id;
+    if (bcount < 0) return 0;
+    if (r->pos + bcount > r->size) bcount = (int32_t)(r->size - r->pos);
+    if (bcount <= 0) return 0;
+    memcpy(data, r->data + r->pos, (size_t)bcount);
+    r->pos += bcount;
+    return bcount;
+}
+
+static uint32_t wv_get_pos(void *id) {
+    return (uint32_t)((struct wv_mem *)id)->pos;
+}
+
+/* NOTE: libwavpack's seek callbacks follow the fseek() convention - they must
+   return 0 on SUCCESS and nonzero on failure. Returning 1 on success makes
+   every internal find_header() bail out and silently breaks seeking. */
+static int wv_set_pos_abs(void *id, uint32_t pos) {
+    struct wv_mem *r = (struct wv_mem *)id;
+    if ((long)pos > r->size) return 1;
+    r->pos = (long)pos;
+    return 0;
+}
+
+/* mode: 0 = SEEK_SET, 1 = SEEK_CUR, 2 = SEEK_END. Returns 0 on success. */
+static int wv_set_pos_rel(void *id, int32_t delta, int mode) {
+    struct wv_mem *r = (struct wv_mem *)id;
+    long np;
+    if (mode == 0) np = delta;
+    else if (mode == 2) np = r->size + delta;
+    else np = r->pos + delta;
+    if (np < 0 || np > r->size) return 1;
+    r->pos = np;
+    return 0;
+}
+
+static int wv_push_back_byte(void *id, int c) {
+    struct wv_mem *r = (struct wv_mem *)id;
+    if (r->pos <= 0) return 0;
+    if (r->data[r->pos - 1] != (unsigned char)c) return 0;
+    r->pos--;
+    return 1;
+}
+
+static uint32_t wv_get_length(void *id) {
+    return (uint32_t)((struct wv_mem *)id)->size;
+}
+
+static int wv_can_seek(void *id) {
+    (void)id;
+    return 1;
+}
+
+static WavpackStreamReader wv_reader = {
+    wv_read_bytes, wv_get_pos, wv_set_pos_abs, wv_set_pos_rel,
+    wv_push_back_byte, wv_get_length, wv_can_seek, NULL
+};
+
+static int wavpack_open(dec_decoder *d) {
+    char err[80];
+    struct wv_mem *src = (struct wv_mem *)calloc(1, sizeof(struct wv_mem));
+    int32_t *buf = (int32_t *)calloc((size_t)WV_CHUNK * 8, sizeof(int32_t));
+    if (!src || !buf) { free(src); free(buf); return 0; }
+    src->data = d->data;
+    src->size = d->size;
+    src->pos = 0;
+
+    WavpackContext *wpc = WavpackOpenFileInputEx(&wv_reader, src, NULL, err,
+                                                  OPEN_WRAPPER, 0);
+    if (!wpc) { free(src); free(buf); return 0; }
+
+    int channels = WavpackGetNumChannels(wpc);
+    unsigned int rate = WavpackGetSampleRate(wpc);
+    if (channels < 1 || rate == 0) { WavpackCloseFile(wpc); free(src); free(buf); return 0; }
+
+    int64_t total = WavpackGetNumSamples64(wpc);
+    if (total > 0) d->duration = (double)total / (double)rate;
+
+    d->kind = DEC_KIND_WAVPACK;
+    d->wv = wpc;
+    d->wv_src = src;
+    d->wv_channels = channels;
+    d->wv_rate = rate;
+    d->wv_is_float = (WavpackGetMode(wpc) & MODE_FLOAT) ? 1 : 0;
+    d->wv_buf = buf;
+    d->wv_buf_frames = 0;
+    d->wv_buf_used = 0;
+    return 1;
+}
+
+/* Packs `frames` interleaved int32 into the scratch buffer, refilling it when
+   exhausted. Returns 0 at end of stream. */
+static long wavpack_ensure(dec_decoder *d, long frames) {
+    if (d->wv_buf_used < d->wv_buf_frames) {
+        long avail = d->wv_buf_frames - d->wv_buf_used;
+        return avail < frames ? avail : frames;
+    }
+    uint32_t want = (uint32_t)(frames < WV_CHUNK ? frames : WV_CHUNK);
+    uint32_t got = WavpackUnpackSamples(d->wv, d->wv_buf, want);
+    d->wv_buf_frames = (long)got;
+    d->wv_buf_used = 0;
+    return got < frames ? (long)got : frames;
+}
+
+static float wavpack_value(dec_decoder *d, int32_t raw) {
+    if (d->wv_is_float) {
+        float f;
+        memcpy(&f, &raw, sizeof(f));
+        if (f > 1.0f) f = 1.0f;
+        if (f < -1.0f) f = -1.0f;
+        return f;
+    }
+    return (float)(((double)raw) * (1.0 / 2147483648.0));
+}
+
+/* Renders up to `frames` stereo @OUT_RATE frames, resampling and downmixing
+   as needed. Shares the linear resampler state with the Vorbis path; only one
+   kind is ever active per decoder. */
+static long wavpack_fill(dec_decoder *d, float *out, long frames) {
+    long filled = 0;
+    int nch = d->wv_channels;
+    int direct = (d->wv_rate == OUT_RATE);
+    double step = (double)d->wv_rate / (double)OUT_RATE;
+
+    while (filled < frames) {
+        long have = wavpack_ensure(d, frames - filled);
+        if (have <= 0) break;
+        const int32_t *src = d->wv_buf + d->wv_buf_used * nch;
+        long i;
+        for (i = 0; i < have && filled < frames; i++) {
+            const int32_t *frame = src + i * nch;
+            float l, r;
+            if (nch >= 2) {
+                l = wavpack_value(d, frame[0]);
+                r = wavpack_value(d, frame[1]);
+            } else {
+                l = r = wavpack_value(d, frame[0]);
+            }
+            if (direct) {
+                out[filled * 2] = l;
+                out[filled * 2 + 1] = r;
+                filled++;
+            } else {
+                double frac = d->res_frac;
+                while (frac < 1.0 && filled < frames) {
+                    float pl = d->res_prev_l, pr = d->res_prev_r;
+                    if (!d->res_has_prev) { pl = l; pr = r; }
+                    out[filled * 2] = (float)(pl + (l - pl) * frac);
+                    out[filled * 2 + 1] = (float)(pr + (r - pr) * frac);
+                    filled++;
+                    frac += step;
+                }
+                frac -= 1.0;
+                if (frac < 0) frac = 0;
+                d->res_frac = frac;
+                d->res_prev_l = l;
+                d->res_prev_r = r;
+                d->res_has_prev = 1;
+            }
+        }
+        d->wv_buf_used += i;
+    }
+    return filled;
+}
+
+/* ------------------------------------------------------------------ */
 /* Unified API                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -426,13 +617,30 @@ void *dec_open(const void *data, size_t size) {
             }
             stb_vorbis_close(v);
         }
-        /* ogg container without vorbis audio -> fall through and fail below */
+        /* An Ogg container that is not decodable vorbis is still an Ogg file,
+           never a tracker module: stop here instead of falling through. */
+        free(d->data);
+        free(d);
+        return NULL;
     }
 
     if (size >= 26 && memcmp(bytes, "Creative Voice File\x1a", 20) == 0) {
         d->kind = DEC_KIND_VOC;
         if (voc_decode_all(d)) return d;
         d->kind = DEC_KIND_NONE;
+        free(d->data);
+        free(d);
+        return NULL;
+    }
+
+    /* WavPack: "wvpk" block header magic */
+    if (size >= 8 && memcmp(bytes, "wvpk", 4) == 0) {
+        if (wavpack_open(d)) return d;
+        /* Recognized WavPack container that will not open (corrupt/truncated):
+           fail cleanly rather than re-probing it as a tracker module. */
+        free(d->data);
+        free(d);
+        return NULL;
     }
 
     /* tracker module via DUMB (any supported format) */
@@ -471,6 +679,11 @@ void dec_close(void *vd) {
             break;
         case DEC_KIND_VORBIS:
             if (d->vb) stb_vorbis_close(d->vb);
+            break;
+        case DEC_KIND_WAVPACK:
+            if (d->wv) WavpackCloseFile(d->wv);
+            free(d->wv_src);
+            free(d->wv_buf);
             break;
         default:
             break;
@@ -521,6 +734,9 @@ long dec_render(void *vd, float *out, long frames) {
                        (size_t)produced * 2 * sizeof(float));
             break;
         }
+        case DEC_KIND_WAVPACK:
+            produced = wavpack_fill(d, out, frames);
+            break;
         default:
             return 0;
     }
@@ -567,6 +783,22 @@ int dec_seek(void *vd, double seconds) {
             if (frame < 0) frame = 0;
             if (frame > d->voc_frames) frame = d->voc_frames;
             d->pos_frames = frame;
+            return 1;
+        }
+        case DEC_KIND_WAVPACK: {
+            if (!d->wv) return 0;
+            if (seconds < 0) seconds = 0;
+            int64_t target = (int64_t)(seconds * (double)d->wv_rate);
+            if (d->duration > 0) {
+                int64_t total = WavpackGetNumSamples64(d->wv);
+                if (target > total) target = total;
+            }
+            if (!WavpackSeekSample64(d->wv, target)) return 0;
+            d->wv_buf_frames = 0;
+            d->wv_buf_used = 0;
+            d->res_frac = 0;
+            d->res_has_prev = 0;
+            d->pos_frames = (long)(seconds * (double)OUT_RATE);
             return 1;
         }
         default:

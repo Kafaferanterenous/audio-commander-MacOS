@@ -1,0 +1,84 @@
+AudioCommander — Goal Backlog (merged formats + features)
+Created 2026-09-23. Status as of build 27 (v0.6.1 released; b23-b27 unreleased).
+10/25 goals complete (40%).
+(F) = format playback, (X) = app feature. Effort: lowest = easiest.
+
+DONE (b18..b22, shipped in v0.6.1):
+  1. (F) AU/SND                5%   native CoreAudio (extension wiring)
+  2. (X) Prevent sleep         5%   NSProcessInfo ~10 lines
+  3. (F) VOC ADPCM            10%   4-bit Creative/SoundBlaster decode
+  4. (X) Remember window/vol  10%   frame + volume persisted
+  5. (X) Sleep timer          15%   Settings picker 15/30/60/90 min
+
+DONE (b23..b27, built, awaiting user verification/release):
+  6. (F) AC3/EAC3             20%   native CoreAudio (extension wiring)
+  7. (X) Media keys + NowPlay 30%   MPRemoteCommandCenter + NowPlaying
+  9. (X) Shuffle + repeat     35%   queue permutation + repeat cycle
+ 10. (X) Playlist .m3u        40%   parser + Library drawer tab
+ 11. (F) WavPack              45%   libwavpack 5.9.0 (BSD 2-Clause) vendored
+
+REMAINING (priority = effort order, easiest -> hardest):
+12. (X) Drag & drop          45%   from Finder into a pane
+13. (X) Mini player          45%   floating window (outside drawer)
+14. (X) Gapless/crossfade    50%   engine scheduling
+15. (F) Ogg FLAC             55%   libFLAC + Ogg container
+16. (X) Spectrum visualizer  55%   drawer tab
+17. (X) 10-band EQ           55%   drawer tab
+18. (F) DSD DSF/DFF          60%   DSD->PCM decimation needed
+19. (X) ReplayGain           60%   scan + apply gain (drawer tab)
+20. (F) DTS                  65%   no small standalone decoder
+21. (X) MP3 ID3 meta editor  65%   drawer tab (TagLib or ID3v2 writer)
+22. (F) APE                  70%   MAC library, streaming awkward
+23. (X) MIDI instrument/bank 75%   AVMIDIPlayer no bank API; sampler risky
+24. (F) WMA                  85%   FFmpeg-only decoder
+25. (F) WMAPro               90%   even heavier
+
+PERMANENTLY PARKED / SKIPPED (revisit only on explicit request):
+- MIDI volume (needs sampler engine, stalls on real HW)
+- GM drums channel 10 (same)
+- WavPack DONE in b27 (#11). APE/DSD/WMA still only via #15/#18/#20/#22/#24/#25
+
+ARCHIVED — LICENSING UNCLEAR (removed from active goals 2026-09-28; do not
+pursue without a clean, redistributable licence that fits the project policy of
+permissive-only (MIT/Apache/BSD/MPL) dependencies):
+  8. (F) TTA (True Audio)   — no small libtta with a verifiable modern licence.
+     The maintained libtta (TTA-Lib) is LGPL-2.1-or-later, and the "BSD" TTA
+     Hardware Players Library 1.2 is only available from an old/mirrored
+     download whose own text contradicts itself on redistribution terms. Not
+     worth shipping ambiguous provenance for one niche format. Revisit only if
+     upstream publishes a permissive decoder.
+
+UI / DRAWER DESIGN (agreed 2026-09-23, clean-UX principle):
+- Main window must NOT grow crowded. Heavy/optional features live in ONE
+  right-side OVERLAY drawer (Xcode/Inspector style - floats over the right
+  pane, panes never reflow) with a segmented TAB BAR inside; each tab
+  scrolls internally; one toggle opens/closes it.
+- Proposed tabs: Library (playlists, format info), Effects (EQ, ReplayGain,
+  visualizer), Utilities (sleep timer, metadata editor).
+- Mini player = separate floating window; media keys = global; neither
+  takes drawer space. Tiny toggles (shuffle/repeat/sleep) may stay on the
+  transport bar.
+- Drawer skeleton BUILT in b26 with #10 (Library live, Utilities = sleep
+  timer, Effects awaits #16/#17/#19).
+
+OTHER OPEN ITEMS:
+- Verify 0.6.1 (b22) on the real Mac (MIDI/tracker OK at 0.6; eyes on
+  window persistence + sleep timer + ADPCM voc).
+- Verify b23 AC3/EAC3 on the real Mac: a .ac3 and a .eac3/.ec3 file list with
+  durations and play (incl. a 5.1/7.1 stream through the stereo device).
+- Verify b24 media keys on the real Mac: keyboard play/pause/next/prev must
+  drive AudioCommander and the Control Center widget must show name/duration.
+- Verify b25 shuffle + repeat on the real Mac: the clicked track must be the
+  first one heard when shuffle is on; toggling shuffle mid-track must not
+  interrupt the current song; repeat-one must restart the same file; repeat-all
+  must wrap at the end of the queue; both toggles must survive a relaunch.
+- Verify b26 playlists + drawer on the real Mac: open the Inspector with the
+  sidebar button (top-left); it must float OVER the right pane without the
+  panes reflowing. Create a playlist, select tracks in a pane, "Add selection",
+  then Play. Click an .m3u in a pane — it should be imported and selected.
+  Check a Windows-authored (CRLF, relative) .m3u parses, that a moved-away
+  track shows as "missing" instead of disappearing, and that the file is written
+  with #EXTM3U and relative paths. Sleep timer now lives in Utilities.
+- Verify b27 WavPack on the real Mac: a .wv must show a duration in the pane,
+  play through the stereo device, and scrub without stalling. Fixtures live in
+  tools/fixtures/*.wv (16/24/32-bit, float, 96 kHz, mono, 5.1, hybrid).

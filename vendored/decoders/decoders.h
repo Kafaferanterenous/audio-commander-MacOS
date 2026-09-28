@@ -10,7 +10,8 @@ extern "C" {
 /*
  Unified embedded decoder for AudioCommander.
  Supported: tracker modules via DUMB (MOD/S3M/XM/IT/669/AMF/AMS/DSM/FAR/
- MTM/OKT/PSM/PTM/STM/ULT), OGG Vorbis via stb_vorbis, Creative Voice (.voc).
+ MTM/OKT/PSM/PTM/STM/ULT), OGG Vorbis via stb_vorbis, Creative Voice (.voc),
+ WavPack (.wv) via libwavpack (BSD 2-Clause).
  All output: interleaved stereo float32 at 44100 Hz.
  Handles are opaque (void*) so the API imports cleanly into Swift.
 */

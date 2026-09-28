@@ -61,6 +61,13 @@ static void dumb_memfile_close(void *f) { free(f); }
 static int dumb_memfile_seek(void *f, dumb_off_t n) {
     MEMFILE *m = f;
 
+    /* NOTE (AudioCommander): upstream computed m->left = m->size - n without
+       validating n, so a truncated/hostile file could seek past the end and
+       wrap left around to a huge value, letting getc() read out of bounds.
+       Reject out-of-range seeks and leave the position untouched. */
+    if (n < 0 || (dumb_off_t)m->size < n)
+        return -1;
+
     m->ptr = m->ptr_begin + n;
     m->left = m->size - n;
 

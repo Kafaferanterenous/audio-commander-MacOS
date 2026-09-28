@@ -25,6 +25,7 @@ final class PaneState: ObservableObject {
     var onPlayRequest: (([FileItem], Int) -> Void)?
     var onAudioToggle: ((FileItem) -> Void)?
     var onActivate: (() -> Void)?
+    var onPlaylistOpen: ((URL) -> Void)?
 
     private var baseItems: [FileItem] = []
     private var durationCache: [String: TimeInterval] = [:]
@@ -72,6 +73,8 @@ final class PaneState: ObservableObject {
             navigate(to: item.url)
         } else if item.isAudio {
             onAudioToggle?(item)
+        } else if AudioFormats.isPlaylistFile(item.name) {
+            onPlaylistOpen?(item.url)
         } else {
             statusMessage = AppSettings.shared.tf("notAnAudio", item.name)
         }
@@ -108,7 +111,7 @@ final class PaneState: ObservableObject {
             }
             baseItems = AppSettings.shared.showAllFiles
                 ? scanned
-                : scanned.filter { $0.isDirectory || $0.isAudio }
+                : scanned.filter { $0.isDirectory || $0.isAudio || AudioFormats.isPlaylistFile($0.name) }
             statusMessage = nil
             applySort()
             computeTotals()

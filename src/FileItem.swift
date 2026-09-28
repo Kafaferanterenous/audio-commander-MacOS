@@ -18,19 +18,21 @@ enum AudioFormats {
         "mp3", "mp2", "m4a", "m4b", "mp4", "aac", "adts", "alac",
         "flac", "caf", "au", "snd",
         "opus",
-        "amr", "3gp", "3gpp", "3g2", "3ga"
+        "amr", "3gp", "3gpp", "3g2", "3ga",
+        "ac3", "ec3", "eac3"
     ]
     /// Audio formats the app recognizes but cannot decode yet.
     /// Kept out of `extensions` so they never show as playable.
     static let unsupportedExtensions: Set<String> = [
-        "wma", "ape", "wv", "dsf", "dff"
+        "wma", "ape", "dsf", "dff"
     ]
-    /// Formats handled by the embedded C decoders (DUMB + stb_vorbis + VOC).
+    /// Formats handled by the embedded C decoders (DUMB + stb_vorbis + VOC + WavPack).
     static let embeddedExtensions: Set<String> = [
         "ogg", "oga",
         "mod", "s3m", "xm", "it",
         "669", "amf", "ams", "dsm", "far", "mtm", "okt", "psm", "ptm", "stm", "ult",
-        "voc"
+        "voc",
+        "wv"
     ]
     /// MIDI (native AVMIDIPlayer with system sound bank).
     static let midiExtensions: Set<String> = ["mid", "midi", "rmi"]
@@ -176,7 +178,7 @@ enum AudioFormats {
         }
         return """
         Native (CoreAudio): \(spaced(nativeExtensions))
-        Vorbis / trackers (DUMB + stb): \(spaced(embeddedExtensions))
+        Vorbis / trackers / lossless (DUMB + stb + WavPack): \(spaced(embeddedExtensions))
         MIDI: \(spaced(midiExtensions))
         """
     }()
@@ -184,8 +186,8 @@ enum AudioFormats {
     /// Human-readable line for the Settings sheet: formats recognized by the
     /// app or ecosystem but not decoded yet, and which could be added.
     static let nonImplementedFormatsText: String =
-        "WMA (Windows Media), APE (Monkey's), WavPack (WV), DSD (DSF/DFF), "
-        + "AC3/EAC3, DTS, TTA (True Audio), AU/SND, Ogg FLAC, VOC ADPCM"
+        "WMA (Windows Media), APE (Monkey's), "
+        + "DSD (DSF/DFF), DTS, Ogg FLAC"
 
     enum Route { case native, embedded, midi }
 
@@ -198,6 +200,14 @@ enum AudioFormats {
 
     static func isAudioFile(_ name: String) -> Bool {
         extensions.contains((name as NSString).pathExtension.lowercased())
+    }
+
+    /// Playlist files are not audio, but they are clickable so a playlist can
+    /// be opened straight from a pane.
+    static let playlistExtensions: Set<String> = ["m3u", "m3u8"]
+
+    static func isPlaylistFile(_ name: String) -> Bool {
+        playlistExtensions.contains((name as NSString).pathExtension.lowercased())
     }
 
     static func sizeText(_ bytes: Int64, isDirectory: Bool) -> String {
