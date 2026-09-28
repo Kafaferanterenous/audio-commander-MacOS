@@ -869,3 +869,40 @@ b27 — GOAL #11: WAVPACK (.wv)  [DONE, built, awaiting real-Mac verification]
 - Fixtures kept in tools/fixtures/*.wv (8 files) so the checks are repeatable.
 - Info.plist 26 -> 27. goals.txt now 10/25 (40%). NOT pushed/released.
 - NEXT: #12 Drag & drop from Finder into a pane (45%).
+
+b28 — GOAL #12: DRAG & DROP FROM FINDER INTO A PANE  [DONE, built]
+- Drop any files/folders from Finder onto a pane's list: everything is COPIED
+  into the pane's current folder (whole folders recurse) and the pane
+  re-scans; name clashes become "name (1).ext", "name (2).ext", ... via the
+  existing TransferManager.uniquedURL, and the result appears in the pane's
+  summary bar ("Copied N item(s)", ", M error(s)"). Mirrors the toolbar Copy
+  behaviour so nothing new to learn.
+- Implementation (all in the app's existing style, no new deps):
+  * PaneState.fileItems(from: [URL]) — builds FileItems for arbitrary URLs
+    using the SAME resource-key scan as the directory scanner, so folders,
+    audio and .m3u files are classified identically to a directory read.
+  * CommanderStore.dropIn(_:pane:) async — guards empty drops ("dropNothing"),
+    perfoms a .copy through TransferManager (progress overlay included),
+    clears selection, refresh()es, then reports the result.
+  * PaneView.list gets .dropDestination(for: URL.self) with an isTargeted
+    highlight ring (palette.accent) while a drag hovers. `.m3u` files dropped
+    in stay clickable (import into the Library) exactly like pane-clicking one.
+- FOUND + FIXED a real pre-existing bug in the same code path: PaneState.refresh()
+  always sets statusMessage = nil, but runTransfer() and trashSelection() set
+  the result message BEFORE calling refresh() — so the "Copied/Moved/Trashed N"
+  feedback never appeared. Moved the assignment after refresh in both, and the
+  new dropIn does the same.
+- VERIFIED (harness compiling the REAL src/PaneState.swift, Transfer.swift,
+  FileItem.swift, AppState.swift, Skin.swift): 18/18 checks — dropped URL
+  classification (audio/folder/m3u/other), empty-drop guard, recursive folder
+  copy, dedupe naming across two drops, progress message, and the
+  refresh-clears-statusMessage ordering (proving the fix is required).
+  App dead ends: destination files actually show up in a refreshed pane.
+- The dedupe suffix starts at " (1)" (not Finder's " 2"): consistent with the
+  app's existing uniquedURL since v0.6 — left unchanged on purpose.
+- Real Finder drop gesture itself can't be scripted in this VM; the wiring is
+  a thin .dropDestination call. Verify on the real Mac: drag 1 file, many
+  files, a folder, a mix; confirm copy not move, "(1)" on clashes, m3u import.
+- Info.plist 27 -> 28. goals.txt now 11/25 (44%). Source pushed to GitHub
+  after #12; no new release cut for b28.
+- NEXT: #13 Mini player (45%) — floating window, lives outside the drawer.

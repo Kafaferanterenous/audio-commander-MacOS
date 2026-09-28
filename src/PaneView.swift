@@ -9,6 +9,8 @@ struct PaneView: View {
     @FocusState.Binding var focusedPane: PaneSide?
     @EnvironmentObject var settings: AppSettings
     @State private var showImporter = false
+    @State private var isDropTargeted = false
+    @ObservedObject private var store = CommanderStore.shared
     var onCopySelection: (() -> Void)?
     var onMoveSelection: (() -> Void)?
     var onTrashSelection: (() -> Void)?
@@ -188,6 +190,23 @@ struct PaneView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .focused($focusedPane, equals: side)
+        .overlay(alignment: .center) {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(palette.accent, lineWidth: 2)
+                    .padding(4)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: isDropTargeted)
+        .dropDestination(for: URL.self,
+                         action: { urls, _ in
+            guard !urls.isEmpty else { return false }
+            Task { @MainActor in
+                await store.dropIn(urls, pane: pane)
+            }
+            return true
+        }, isTargeted: { isDropTargeted = $0 })
     }
 
     private func row(_ item: FileItem) -> some View {

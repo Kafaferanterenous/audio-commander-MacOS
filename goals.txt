@@ -1,6 +1,6 @@
 AudioCommander — Goal Backlog (merged formats + features)
-Created 2026-09-23. Status as of build 27 (v0.6.1 released; b23-b27 unreleased).
-10/25 goals complete (40%).
+Created 2026-09-23. Status as of build 28 (v0.6.2 released 2026-09-28; b28 = current work).
+11/25 goals complete (44%).
 (F) = format playback, (X) = app feature. Effort: lowest = easiest.
 
 DONE (b18..b22, shipped in v0.6.1):
@@ -10,15 +10,15 @@ DONE (b18..b22, shipped in v0.6.1):
   4. (X) Remember window/vol  10%   frame + volume persisted
   5. (X) Sleep timer          15%   Settings picker 15/30/60/90 min
 
-DONE (b23..b27, built, awaiting user verification/release):
+DONE (b23..b28, built, awaiting user verification/release):
   6. (F) AC3/EAC3             20%   native CoreAudio (extension wiring)
   7. (X) Media keys + NowPlay 30%   MPRemoteCommandCenter + NowPlaying
   9. (X) Shuffle + repeat     35%   queue permutation + repeat cycle
  10. (X) Playlist .m3u        40%   parser + Library drawer tab
  11. (F) WavPack              45%   libwavpack 5.9.0 (BSD 2-Clause) vendored
+ 12. (X) Drag & drop          45%   Finder -> pane copies in + refreshes
 
 REMAINING (priority = effort order, easiest -> hardest):
-12. (X) Drag & drop          45%   from Finder into a pane
 13. (X) Mini player          45%   floating window (outside drawer)
 14. (X) Gapless/crossfade    50%   engine scheduling
 15. (F) Ogg FLAC             55%   libFLAC + Ogg container

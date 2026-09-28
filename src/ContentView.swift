@@ -189,6 +189,23 @@ final class CommanderStore: ObservableObject {
                          paneLabel: AppSettings.shared.t(pane.side))
     }
 
+    /// Finder drag & drop into a pane (#12): copies every dropped item
+    /// (whole folders recurse) into that pane's current folder, then rescans.
+    /// Name clashes become "name (2).ext" and the result shows in the pane's
+    /// summary bar, mirroring the toolbar copy behaviour.
+    func dropIn(_ urls: [URL], pane: PaneState) async {
+        let items = PaneState.fileItems(from: urls)
+        guard !items.isEmpty else {
+            pane.statusMessage = AppSettings.shared.t("dropNothing")
+            return
+        }
+        _ = await transfer.perform(mode: .copy, items: items,
+                                   destination: pane.folder, settings: AppSettings.shared)
+        pane.selectedIDs.removeAll()
+        await pane.refresh()
+        pane.statusMessage = transfer.lastResultMessage
+    }
+
     func runTransfer(mode: TransferManager.Mode, source: PaneState) {
         let destination = source === left ? right : left
         let items = source.selectedItems
@@ -200,10 +217,11 @@ final class CommanderStore: ObservableObject {
             _ = await transfer.perform(mode: mode, items: items,
                                        destination: destination.folder,
                                        settings: AppSettings.shared)
-            source.statusMessage = transfer.lastResultMessage
             source.selectedIDs.removeAll()
             await source.refresh()
             await destination.refresh()
+            // refresh() clears statusMessage, so set the result afterwards.
+            source.statusMessage = transfer.lastResultMessage
         }
     }
 
@@ -226,9 +244,10 @@ final class CommanderStore: ObservableObject {
             _ = await transfer.perform(mode: .trash, items: items,
                                        destination: source.folder,
                                        settings: AppSettings.shared)
-            source.statusMessage = transfer.lastResultMessage
             source.selectedIDs.removeAll()
             await source.refresh()
+            // refresh() clears statusMessage, so set the result afterwards.
+            source.statusMessage = transfer.lastResultMessage
         }
     }
 

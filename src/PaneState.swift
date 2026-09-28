@@ -49,6 +49,23 @@ final class PaneState: ObservableObject {
         baseItems.filter { selectedIDs.contains($0.id) }
     }
 
+    /// Builds FileItems for arbitrary URLs (Finder drops), classifying folders
+    /// and audio/playlist files exactly like the directory scanner does.
+    static func fileItems(from urls: [URL]) -> [FileItem] {
+        urls.compactMap { url in
+            let values = try? url.resourceValues(
+                forKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey])
+            let isDir = values?.isDirectory ?? false
+            return FileItem(
+                url: url,
+                name: url.lastPathComponent,
+                isDirectory: isDir,
+                size: Int64(values?.fileSize ?? 0),
+                modified: values?.contentModificationDate,
+                isAudio: !isDir && AudioFormats.isAudioFile(url.lastPathComponent))
+        }
+    }
+
     func toggleSelection(_ item: FileItem) {
         if selectedIDs.contains(item.id) {
             selectedIDs.remove(item.id)
