@@ -10,6 +10,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$BUILD/x86_64" "$BUILD
          "$BUILD/x86_64/obj" "$BUILD/arm64/obj"
 
 CC="xcrun cc"
+SWIFTC="xcrun swiftc"
 CFLAGS="-O2 -w -mmacosx-version-min=13.0 -DENABLE_LEGACY -I vendored/dumb/include -I vendored/stb -I vendored/decoders -I vendored/wavpack/include -I vendored/wavpack/src"
 CSRCS=$(find vendored -name '*.c')
 
@@ -25,7 +26,7 @@ for ARCH in x86_64 arm64; do
     done
     libtool -static -o "$BUILD/$ARCH/libdecoders.a" "$OBJDIR"/*.o
 
-    swiftc -O -parse-as-library -target ${ARCH}-apple-macos13.0 \
+    $SWIFTC -O -parse-as-library -target ${ARCH}-apple-macos13.0 \
         -import-objc-header src/Bridge.h \
         src/*.swift -o "$BUILD/$ARCH/${APP_NAME}" \
         -L"$BUILD/$ARCH" -ldecoders

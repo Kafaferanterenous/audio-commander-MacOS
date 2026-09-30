@@ -269,7 +269,10 @@ final class AppSettings: ObservableObject {
             "notImplementedFormats": "Audio formats recognized but not implemented yet",
             "sleepTimerLabel": "Sleep timer",
             "sleepOff": "Off",
-            "sleepMinutes": "%d minutes"
+            "sleepMinutes": "%d minutes",
+            "miniPlayer": "Mini player",
+            "miniIdle": "Nothing playing",
+            "miniShowMain": "Show the main window"
         ],
         .polish: [
             "left": "Lewy", "right": "Prawy",
@@ -344,7 +347,10 @@ final class AppSettings: ObservableObject {
             "notImplementedFormats": "Formaty audio rozpoznawane, ale jeszcze nieobsługiwane",
             "sleepTimerLabel": "Wyłącznik czasowy",
             "sleepOff": "Wyłączony",
-            "sleepMinutes": "%d minut"
+            "sleepMinutes": "%d minut",
+            "miniPlayer": "Mini odtwarzacz",
+            "miniIdle": "Nic nie gra",
+            "miniShowMain": "Pokaż główne okno"
         ],
         .italian: [
             "left": "Sinistro", "right": "Destro",
@@ -419,7 +425,10 @@ final class AppSettings: ObservableObject {
             "notImplementedFormats": "Formati audio riconosciuti ma non ancora implementati",
             "sleepTimerLabel": "Timer di sospensione",
             "sleepOff": "Spento",
-            "sleepMinutes": "%d minuti"
+            "sleepMinutes": "%d minuti",
+            "miniPlayer": "Mini riproduttore",
+            "miniIdle": "Nulla in riproduzione",
+            "miniShowMain": "Mostra la finestra principale"
         ],
         .chinese: [
             "left": "左", "right": "右",
@@ -494,7 +503,10 @@ final class AppSettings: ObservableObject {
             "notImplementedFormats": "已识别但尚未实现的音频格式",
             "sleepTimerLabel": "睡眠定时器",
             "sleepOff": "关闭",
-            "sleepMinutes": "%d 分钟"
+            "sleepMinutes": "%d 分钟",
+            "miniPlayer": "迷你播放器",
+            "miniIdle": "当前没有播放",
+            "miniShowMain": "显示主窗口"
         ]
     ]
 }

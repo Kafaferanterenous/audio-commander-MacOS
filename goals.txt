@@ -1,6 +1,6 @@
 AudioCommander — Goal Backlog (merged formats + features)
-Created 2026-09-23. Status as of build 28 (v0.6.2 released 2026-09-28; b28 = current work).
-11/25 goals complete (44%).
+Created 2026-09-23. Status as of build 29 (v0.6.2 released 2026-09-28; b29 = current work).
+12/25 goals complete (48%).
 (F) = format playback, (X) = app feature. Effort: lowest = easiest.
 
 DONE (b18..b22, shipped in v0.6.1):
@@ -10,20 +10,20 @@ DONE (b18..b22, shipped in v0.6.1):
   4. (X) Remember window/vol  10%   frame + volume persisted
   5. (X) Sleep timer          15%   Settings picker 15/30/60/90 min
 
-DONE (b23..b28, built, awaiting user verification/release):
+DONE (b23..b29, built, awaiting user verification/release):
   6. (F) AC3/EAC3             20%   native CoreAudio (extension wiring)
   7. (X) Media keys + NowPlay 30%   MPRemoteCommandCenter + NowPlaying
   9. (X) Shuffle + repeat     35%   queue permutation + repeat cycle
  10. (X) Playlist .m3u        40%   parser + Library drawer tab
  11. (F) WavPack              45%   libwavpack 5.9.0 (BSD 2-Clause) vendored
  12. (X) Drag & drop          45%   Finder -> pane copies in + refreshes
+ 13. (X) Mini player          45%   floating panel OUTSIDE the drawer (b29)
 
-REMAINING (priority = effort order, easiest -> hardest):
-13. (X) Mini player          45%   floating window (outside drawer)
-14. (X) Gapless/crossfade    50%   engine scheduling
-15. (F) Ogg FLAC             55%   libFLAC + Ogg container
-16. (X) Spectrum visualizer  55%   drawer tab
-17. (X) 10-band EQ           55%   drawer tab
+REMAINING (priority order; #15/#16 moved above #14 on user request 2026-09-29):
+ 15. (F) Ogg FLAC             55%   libFLAC + Ogg container
+ 16. (X) Spectrum visualizer  55%   drawer tab (Effects)
+ 14. (X) Gapless/crossfade    50%   engine scheduling
+ 17. (X) 10-band EQ           55%   drawer tab (Effects)
 18. (F) DSD DSF/DFF          60%   DSD->PCM decimation needed
 19. (X) ReplayGain           60%   scan + apply gain (drawer tab)
 20. (F) DTS                  65%   no small standalone decoder

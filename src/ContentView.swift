@@ -10,8 +10,46 @@ extension KeyEquivalent {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    /// Strong-ish handle to the real main window. `NSApp.windows.first` is NOT
+    /// safe once the mini player (#13) is a floating panel: `NSApp.windows` is
+    /// front-to-back ordered, so a visible mini player would be "first" and the
+    /// main window's frame would be saved from the wrong window.
+    private static weak var cachedMainWindow: NSWindow?
+
+    static var current: NSWindow? {
+        if let cached = cachedMainWindow { return cached }
+        let found = NSApp.windows.first { win in
+            guard !(win is NSPanel) else { return false }
+            guard win.identifier != MiniPlayerController.panelID else { return false }
+            return win.sheetParent == nil
+        }
+        cachedMainWindow = found
+        return found
+    }
+
+    /// Brings the main window back: orders it front if it still exists,
+    /// otherwise re-activates the app so AppKit/SwiftUI reopens the WindowGroup.
+    static func revealMainWindow() {
+        if let win = current {
+            NSApp.activate(ignoringOtherApps: true)
+            win.makeKeyAndOrderFront(nil)
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    /// The mini player keeps the app (and playback) alive once the main window
+    /// is closed; the app quits only when the LAST window goes away.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        let miniOpen = MainActor.assumeIsolated { MiniPlayerController.shared.isOpen }
+        return !miniOpen
+    }
+
+    /// Reopening from the Dock with only the mini player up must bring the main
+    /// window back (false = let AppKit/SwiftUI handle the reopen).
+    func applicationShouldHandleReopen(_ sender: NSApplication,
+                                       hasVisibleWindows flag: Bool) -> Bool {
+        false
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -21,10 +59,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated { NowPlaying.installCommands() }
         DispatchQueue.main.async { [weak self] in
-            guard let self, let win = NSApp.windows.first else { return }
+            guard let self, let win = Self.current else { return }
             win.delegate = self
             win.title = "AudioCommander"
             self.refreshWindowFrame(win)
+            // #13: bring the mini player back if it was left open.
+            MainActor.assumeIsolated { MiniPlayerController.shared.restoreIfOpen() }
         }
     }
 
@@ -53,7 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func saveWindowFrame() {
-        guard let win = NSApp.windows.first else { return }
+        guard let win = Self.current else { return }
         UserDefaults.standard.set(NSStringFromRect(win.frame), forKey: "ac_win_frame")
     }
 }
@@ -94,6 +134,11 @@ struct AudioCommanderApp: App {
                     CommanderStore.shared.trashActive()
                 }
                 .keyboardShortcut(KeyEquivalent.delete, modifiers: [.command])
+                // #13 Mini player (floating window, lives outside the drawer).
+                Button(AppSettings.shared.t("miniPlayer")) {
+                    MiniPlayerController.shared.toggle()
+                }
+                .keyboardShortcut("m", modifiers: [.command, .option])
             }
         }
     }
@@ -269,6 +314,7 @@ final class CommanderStore: ObservableObject {
 struct ContentView: View {
     @ObservedObject private var store = CommanderStore.shared
     @ObservedObject private var settings = AppSettings.shared
+    @ObservedObject private var mini = MiniPlayerController.shared
     @FocusState private var focusedPane: PaneSide?
     @State private var showSettings = false
 
@@ -367,6 +413,19 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.leading, 12)
+                .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
+                Button {
+                    mini.toggle()
+                } label: {
+                    Image(systemName: "play.rectangle")
+                        .font(.system(size: 13).weight(.medium))
+                        .padding(6)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .foregroundStyle(mini.isOpen ? settings.palette.accent : .primary)
+                        .help(settings.t("miniPlayer"))
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, 4)
                 .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
                 Spacer()
                 Button {

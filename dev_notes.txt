@@ -906,3 +906,54 @@ b28 — GOAL #12: DRAG & DROP FROM FINDER INTO A PANE  [DONE, built]
 - Info.plist 27 -> 28. goals.txt now 11/25 (44%). Source pushed to GitHub
   after #12; no new release cut for b28.
 - NEXT: #13 Mini player (45%) — floating window, lives outside the drawer.
+
+b29 — GOAL #13: MINI PLAYER (floating window outside the drawer)  [DONE, built]
+Journal for this build was written on 2026-09-30; the code itself landed on
+2026-09-29 and sat uncommitted until now.
+- NEW src/MiniPlayer.swift. A separate floating window that lives OUTSIDE the
+  Inspector drawer, so the drawer keeps only its three tabs (Library / Effects /
+  Utilities) per the agreed clean-UX rule.
+  * NSPanel at .floating with becomesKeyOnlyIfNeeded: floats above the main
+    window WITHOUT taking key focus, so the panes stay usable (type-ahead,
+    shortcuts) while it sits on top. .titled + .closable + .utilityWindow so
+    the system title bar still provides drag-by-title-bar and the close button.
+  * Non-activating (orderFront, never activate), canJoinAllSpaces +
+    fullScreenAuxiliary, isReleasedWhenClosed = false.
+  * Frame + open state persist in UserDefaults (ac_mini_frame / ac_mini_open)
+    and are restored at launch; the frame is clamped back onto the screen if
+    the display layout changed. Saves are debounced 400 ms on move/resize.
+  * Content: note icon, track name (middle-truncated, full path in the tooltip)
+    or the "Nothing playing" idle label, a "macwindow" button that brings the
+    main window back, elapsed/total + seek slider, prev/play-pause/next,
+    the playback note or the source-pane name, and a volume slider. It reads
+    the SAME PlayerState as the main window, so the two can never disagree.
+- Window-lifetime fixes in ContentView.swift (AppDelegate), needed because the
+  mini player makes "NSApp.windows.first" wrong:
+  * AppDelegate.current now picks the real main window (skips NSPanels, skips
+    the mini player's identifier, skips sheets) and caches it, so the saved
+    window frame can no longer come from the mini player.
+  * applicationShouldTerminateAfterLastWindowClosed now returns false while the
+    mini player is open: closing the MAIN window keeps the app (and playback)
+    alive, and the app quits only when the last window goes away.
+  * applicationShouldHandleReopen returns false so Dock/ Finder reopen is
+    handled by AppKit/SwiftUI (which restores the WindowGroup) instead of the
+    delegate's ad-hoc path.
+  * Menu: Window > "Mini player" (⌥⌘M) toggles it.
+- Localization: miniPlayer / miniIdle / miniShowMain added for all six languages
+  (en, pl, it, zh + the existing tables), matching the app's string-table style.
+- build.sh: SWIFTC is now resolved through `xcrun swiftc` like CC, so the build
+  uses the active toolchain instead of whatever is on PATH.
+- VERIFIED (2026-09-30): ./build.sh clean -> universal (x86_64 + arm64),
+  ad-hoc signed, 5.6 MB; the app launches, stays alive past 6 s and quits
+  cleanly. NSPanel levelling, the no-key-steal behaviour, frame persistence and
+  the close-main-window path are AppKit/SwiftUI behaviour that this VM cannot
+  assert — verify on the real Mac: ⌥⌘M opens the floating mini player over the
+  main window, the panes still take typing focus, close the main window and
+  confirm playback continues and the mini player can bring the window back,
+  then relaunch with the mini player left open.
+- Info.plist 28 -> 29. goals.txt now 12/25 (48%). Source pushed after this
+  build; no release cut yet (v0.6.2 on GitHub is still build 27, so b28 + b29
+  are unreleased).
+- NEXT: #15 Ogg FLAC (55%) — vendored libFLAC + an Ogg container reader, using
+  the b27 WavPack work as the template for adding a format. #16 Spectrum
+  visualizer (55%) is the other candidate and is pure UI (Effects tab).
