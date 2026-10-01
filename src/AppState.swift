@@ -279,6 +279,7 @@ final class AppSettings: ObservableObject {
             "sleepTimerLabel": "Sleep timer",
             "sleepOff": "Off",
             "sleepMinutes": "%d minutes",
+            "sleepMinutesShort": "%d min",
             "miniPlayer": "Mini player",
             "miniIdle": "Nothing playing",
             "miniShowMain": "Show the main window"
@@ -360,6 +361,7 @@ final class AppSettings: ObservableObject {
             "sleepTimerLabel": "Wyłącznik czasowy",
             "sleepOff": "Wyłączony",
             "sleepMinutes": "%d minut",
+            "sleepMinutesShort": "%d min",
             "miniPlayer": "Mini odtwarzacz",
             "miniIdle": "Nic nie gra",
             "miniShowMain": "Pokaż główne okno"
@@ -441,6 +443,7 @@ final class AppSettings: ObservableObject {
             "sleepTimerLabel": "Timer di sospensione",
             "sleepOff": "Spento",
             "sleepMinutes": "%d minuti",
+            "sleepMinutesShort": "%d min",
             "miniPlayer": "Mini riproduttore",
             "miniIdle": "Nulla in riproduzione",
             "miniShowMain": "Mostra la finestra principale"
@@ -520,6 +523,7 @@ final class AppSettings: ObservableObject {
             "sleepTimerLabel": "睡眠定时器",
             "sleepOff": "关闭",
             "sleepMinutes": "%d 分钟",
+            "sleepMinutesShort": "%d 分",
             "miniPlayer": "迷你播放器",
             "miniIdle": "当前没有播放",
             "miniShowMain": "显示主窗口"

@@ -152,6 +152,9 @@ final class CommanderStore: ObservableObject {
     @Published private(set) var left: PaneState
     @Published private(set) var right: PaneState
     @Published var drawerOpen = false
+    /// Which flyout tab is showing. Lives here rather than in the drawer's own
+    /// state so the gear icon and the Settings… menu item can select a tab.
+    @Published var drawerTab: DrawerTab = .library
     let player = PlayerState()
     /// #16 spectrum analyser. Shared singleton so PlayerState's engine taps and
     /// the Effects tab read the same object without threading a reference
@@ -320,7 +323,6 @@ struct ContentView: View {
     @ObservedObject private var settings = AppSettings.shared
     @ObservedObject private var mini = MiniPlayerController.shared
     @FocusState private var focusedPane: PaneSide?
-    @State private var showSettings = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -359,11 +361,11 @@ struct ContentView: View {
                 TransferOverlay(transfer: store.transfer, progress: progress)
             }
         }
-        .sheet(isPresented: $showSettings) {
-            SettingsSheet()
-        }
         .onChange(of: settings.settingsRequest) { _ in
-            showSettings = true
+            // Settings… from the menu bar opens the flyout on the same tab the
+            // gear does, so there is one place settings live.
+            store.drawerOpen = true
+            store.drawerTab = .settings
         }
         .onChange(of: settings.showAllFiles) { _ in
             Task {
@@ -402,22 +404,14 @@ struct ContentView: View {
         .frame(maxHeight: .infinity)
     }
 
+    /// Overlays the top of the panes. The pane-side toggle is gone: it sat over
+    /// the left pane's "Left" header and, now that the gear opens the flyout,
+    /// there was nothing left for it to do. The gear toggles the flyout instead,
+    /// so the top strip carries only the mini player and the gear on the right.
     private var topButtons: some View {
         ZStack {
             HStack {
-                Button {
-                    store.drawerOpen.toggle()
-                } label: {
-                    Image(systemName: "sidebar.right")
-                        .font(.system(size: 13).weight(.medium))
-                        .padding(6)
-                        .background(.ultraThinMaterial, in: Circle())
-                        .foregroundStyle(store.drawerOpen ? settings.palette.accent : .primary)
-                        .help(settings.t("drawerTitle"))
-                }
-                .buttonStyle(.plain)
-                .padding(.leading, 12)
-                .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
+                Spacer()
                 Button {
                     mini.toggle()
                 } label: {
@@ -429,16 +423,25 @@ struct ContentView: View {
                         .help(settings.t("miniPlayer"))
                 }
                 .buttonStyle(.plain)
-                .padding(.leading, 4)
+                .padding(.trailing, 4)
                 .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
-                Spacer()
                 Button {
-                    showSettings = true
+                    // The gear is the flyout's front door: it opens the drawer on
+                    // the Settings tab, and closes it again when that tab is
+                    // already up. It is the only toggle now, so it has to both
+                    // open and close.
+                    if store.drawerOpen && store.drawerTab == .settings {
+                        store.drawerOpen = false
+                    } else {
+                        store.drawerOpen = true
+                        store.drawerTab = .settings
+                    }
                 } label: {
                     Image(systemName: "gearshape.fill")
                         .font(.system(size: 13).weight(.medium))
                         .padding(6)
                         .background(.ultraThinMaterial, in: Circle())
+                        .foregroundStyle(store.drawerOpen ? settings.palette.accent : .primary)
                         .help(settings.t("settings"))
                 }
                 .buttonStyle(.plain)
@@ -464,13 +467,14 @@ struct ContentView: View {
 // MARK: - Inspector drawer
 
 enum DrawerTab: String, CaseIterable, Identifiable {
-    case library, effects, utilities
+    case library, effects, utilities, settings
     var id: String { rawValue }
     var titleKey: String {
         switch self {
         case .library: return "drawerLibrary"
         case .effects: return "drawerEffects"
         case .utilities: return "drawerUtilities"
+        case .settings: return "settings"
         }
     }
 }
@@ -482,7 +486,6 @@ struct InspectorDrawer: View {
     @ObservedObject var store: CommanderStore
     @EnvironmentObject private var settings: AppSettings
     @Binding var isOpen: Bool
-    @State private var tab: DrawerTab = .library
     @State private var newName = ""
     @State private var isNaming = false
     @State private var isRenaming = false
@@ -494,7 +497,7 @@ struct InspectorDrawer: View {
         VStack(spacing: 0) {
             header
             Divider().overlay(settings.palette.divider)
-            Picker("", selection: $tab) {
+            Picker("", selection: $store.drawerTab) {
                 ForEach(DrawerTab.allCases) { t in
                     Text(settings.t(t.titleKey)).tag(t)
                 }
@@ -504,10 +507,11 @@ struct InspectorDrawer: View {
             .padding(.horizontal, 12)
             .padding(.bottom, 10)
 
-            switch tab {
+            switch store.drawerTab {
             case .library: libraryTab
             case .effects: effectsTab
             case .utilities: utilitiesTab
+            case .settings: settingsTab
             }
 
             if let status = playlists.statusMessage {
@@ -520,7 +524,7 @@ struct InspectorDrawer: View {
                     .padding(.bottom, 8)
             }
         }
-        .frame(width: 320)
+        .frame(width: 360)
         .background(.ultraThinMaterial)
         .overlay(alignment: .leading) {
             Rectangle().fill(settings.palette.divider).frame(width: 1)
@@ -846,15 +850,14 @@ struct InspectorDrawer: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(settings.t("sleepTimerLabel"))
                     .font(settings.scaled(13))
-                Picker("", selection: Binding(
-                    get: { store.player.sleepMinutes },
-                    set: { store.player.sleepMinutes = $0 })) {
-                    ForEach(SleepTimerOptions.allCases) { opt in
-                        Text(opt.label(settings: settings)).tag(opt.minutes)
-                    }
+                // Split over two rows. Five segments in a 320pt flyout left each
+                // label too narrow to read, and a segmented control cannot wrap
+                // itself, so the choices are laid out as a grid of buttons that
+                // look and behave like one.
+                VStack(spacing: 4) {
+                    sleepTimerRow(SleepTimerOptions.allCases.prefix(3))
+                    sleepTimerRow(SleepTimerOptions.allCases.dropFirst(3))
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
             }
             Divider().overlay(settings.palette.divider)
             Text(settings.t("utilitiesSoon"))
@@ -865,6 +868,46 @@ struct InspectorDrawer: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    // MARK: Settings tab
+
+    /// The gear icon and the menu's Settings… command both land here.
+    private var settingsTab: some View {
+        SettingsPanel()
+            .environmentObject(settings)
+    }
+
+    /// One row of sleep-timer choices, spaced evenly. Buttons rather than a
+    /// Picker so the row can hold an arbitrary number of options and the
+    /// selection still reads at a glance.
+    private func sleepTimerRow(_ options: ArraySlice<SleepTimerOptions>) -> some View {
+        HStack(spacing: 4) {
+            ForEach(Array(options)) { opt in
+                let selected = store.player.sleepMinutes == opt.minutes
+                Button {
+                    store.player.sleepMinutes = opt.minutes
+                } label: {
+                    Text(opt.shortLabel(settings: settings))
+                        .font(settings.scaled(11))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 5)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5)
+                                .fill(selected ? settings.palette.accent.opacity(0.22)
+                                               : settings.palette.cardOpacityFill))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5)
+                                .stroke(selected ? settings.palette.accent
+                                                 : settings.palette.divider,
+                                        lineWidth: selected ? 1.5 : 1))
+                        .foregroundStyle(selected ? settings.palette.accent : Color.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
     }
 
     private func placeholder(_ text: String) -> some View {
@@ -1042,9 +1085,11 @@ struct TransferOverlay: View {
 
 // MARK: - Settings sheet
 
-struct SettingsSheet: View {
+/// Settings content, shared by the drawer's Settings tab. It lives in the
+/// flyout rather than a modal sheet so it stays open while you pick a theme and
+/// watch the rest of the app change behind it.
+struct SettingsPanel: View {
     @EnvironmentObject var settings: AppSettings
-    @Environment(\.dismiss) private var dismiss
     @ObservedObject private var store = CommanderStore.shared
     @State private var showSkinImporter = false
     @State private var skinImportFailed = false
@@ -1084,101 +1129,91 @@ struct SettingsSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(settings.t("settings"))
-                .font(settings.scaled(17).weight(.bold))
-
-            HStack {
-                Text(settings.t("version"))
-                    .font(settings.scaled(13))
-                Spacer()
-                Text(versionText)
-                    .font(settings.scaled(13).monospacedDigit().weight(.semibold))
-                    .foregroundStyle(settings.palette.accent)
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(settings.t("fontSize"))
-                    .font(settings.scaled(13))
+        // Scrollable: the full settings list is taller than the flyout, and a
+        // clipped control is worse than one you have to scroll to.
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    Slider(value: $settings.fontScale, in: 0.85...1.30, step: 0.05)
-                    Text("\(Int((settings.fontScale * 100).rounded()))%")
-                        .font(settings.scaled(12).monospacedDigit())
+                    Text(settings.t("version"))
+                        .font(settings.scaled(13))
+                    Spacer()
+                    Text(versionText)
+                        .font(settings.scaled(13).monospacedDigit().weight(.semibold))
+                        .foregroundStyle(settings.palette.accent)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(settings.t("fontSize"))
+                        .font(settings.scaled(13))
+                    HStack {
+                        Slider(value: $settings.fontScale, in: 0.85...1.30, step: 0.05)
+                        Text("\(Int((settings.fontScale * 100).rounded()))%")
+                            .font(settings.scaled(12).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, alignment: .trailing)
+                    }
+                    Text(settings.t("idleHint"))
+                        .font(settings.scaled(13))
                         .foregroundStyle(.secondary)
-                        .frame(width: 44, alignment: .trailing)
+                        .lineLimit(1)
                 }
-                Text(settings.t("idleHint"))
-                    .font(settings.scaled(13))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text(settings.t("themeLabel"))
-                    .font(settings.scaled(13))
-                HStack(spacing: 14) {
-                    ForEach(AppThemeKind.allCases, id: \.rawValue) { kind in
-                        themeSwatch(kind)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(settings.t("themeLabel"))
+                        .font(settings.scaled(13))
+                    HStack(spacing: 14) {
+                        ForEach(AppThemeKind.allCases, id: \.rawValue) { kind in
+                            themeSwatch(kind)
+                        }
                     }
                 }
-            }
 
-            skinsSection
+                skinsSection
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text(settings.t("languageLabel"))
-                    .font(settings.scaled(13))
-                Picker("", selection: $settings.language) {
-                    ForEach(Language.allCases) { lang in
-                        Text(lang.nativeName).tag(lang)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(settings.t("languageLabel"))
+                        .font(settings.scaled(13))
+                    Picker("", selection: $settings.language) {
+                        ForEach(Language.allCases) { lang in
+                            Text(lang.nativeName).tag(lang)
+                        }
                     }
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 220, alignment: .leading)
                 }
-                .pickerStyle(.menu)
-                .frame(maxWidth: 220, alignment: .leading)
-            }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Toggle(settings.t("showAllFiles"), isOn: $settings.showAllFiles)
-                    .toggleStyle(.switch)
-                    .font(settings.scaled(13))
-                Text(settings.t("audioOnlyHint"))
-                    .font(settings.scaled(11))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle(settings.t("showAllFiles"), isOn: $settings.showAllFiles)
+                        .toggleStyle(.switch)
+                        .font(settings.scaled(13))
+                    Text(settings.t("audioOnlyHint"))
+                        .font(settings.scaled(11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
-            Divider()
+                Divider()
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text(settings.t("playableFormats"))
-                    .font(settings.scaled(13))
-                Text(AudioFormats.playableFormatsText)
-                    .font(settings.scaled(10).monospaced())
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(settings.t("notImplementedFormats"))
-                    .font(settings.scaled(13))
-                    .padding(.top, 4)
-                Text(AudioFormats.nonImplementedFormatsText)
-                    .font(settings.scaled(10).monospaced())
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(settings.t("playableFormats"))
+                        .font(settings.scaled(13))
+                    Text(AudioFormats.playableFormatsText)
+                        .font(settings.scaled(10).monospaced())
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(settings.t("notImplementedFormats"))
+                        .font(settings.scaled(13))
+                        .padding(.top, 4)
+                    Text(AudioFormats.nonImplementedFormatsText)
+                        .font(settings.scaled(10).monospaced())
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
-            HStack {
-                Spacer()
-                Button(settings.t("close")) { dismiss() }
-                    .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(24)
-        .frame(width: 380)
-        .background(
-            LinearGradient(colors: [settings.palette.bgTop, settings.palette.bgBottom],
-                           startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea()
-        )
-        .preferredColorScheme(settings.palette.colorScheme)
+        .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .fileImporter(isPresented: $showSkinImporter,
                       allowedContentTypes: [Self.sknType]) { result in
             guard case .success(let url) = result else { return }
@@ -1272,6 +1307,19 @@ enum SleepTimerOptions: Int, CaseIterable, Identifiable {
         case .m30: return settings.tf("sleepMinutes", 30)
         case .m60: return settings.tf("sleepMinutes", 60)
         case .m90: return settings.tf("sleepMinutes", 90)
+        }
+    }
+
+    /// Compact form for the flyout's two-row grid, where "60 minutes" does not
+    /// fit a third of a 320pt drawer.
+    @MainActor
+    func shortLabel(settings: AppSettings) -> String {
+        switch self {
+        case .off: return settings.t("sleepOff")
+        case .m15: return settings.tf("sleepMinutesShort", 15)
+        case .m30: return settings.tf("sleepMinutesShort", 30)
+        case .m60: return settings.tf("sleepMinutesShort", 60)
+        case .m90: return settings.tf("sleepMinutesShort", 90)
         }
     }
 }
