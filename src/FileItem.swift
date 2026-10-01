@@ -26,7 +26,7 @@ enum AudioFormats {
     static let unsupportedExtensions: Set<String> = [
         "wma", "ape", "dsf", "dff"
     ]
-    /// Formats handled by the embedded C decoders (DUMB + stb_vorbis + VOC + WavPack).
+    /// Formats handled by the embedded C decoders (DUMB + stb_vorbis + VOC + WavPack + libFLAC).
     static let embeddedExtensions: Set<String> = [
         "ogg", "oga",
         "mod", "s3m", "xm", "it",
@@ -178,7 +178,7 @@ enum AudioFormats {
         }
         return """
         Native (CoreAudio): \(spaced(nativeExtensions))
-        Vorbis / trackers / lossless (DUMB + stb + WavPack): \(spaced(embeddedExtensions))
+        Vorbis / trackers / lossless (DUMB + stb + WavPack + libFLAC): \(spaced(embeddedExtensions))
         MIDI: \(spaced(midiExtensions))
         """
     }()
@@ -186,8 +186,7 @@ enum AudioFormats {
     /// Human-readable line for the Settings sheet: formats recognized by the
     /// app or ecosystem but not decoded yet, and which could be added.
     static let nonImplementedFormatsText: String =
-        "WMA (Windows Media), APE (Monkey's), "
-        + "DSD (DSF/DFF), DTS, Ogg FLAC"
+        "WMA (Windows Media), APE (Monkey's), DSD (DSF/DFF), DTS"
 
     enum Route { case native, embedded, midi }
 

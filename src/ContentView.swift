@@ -153,6 +153,10 @@ final class CommanderStore: ObservableObject {
     @Published private(set) var right: PaneState
     @Published var drawerOpen = false
     let player = PlayerState()
+    /// #16 spectrum analyser. Shared singleton so PlayerState's engine taps and
+    /// the Effects tab read the same object without threading a reference
+    /// through CommanderStore's initialiser.
+    let spectrum = SpectrumAnalyzer.shared
     let transfer = TransferManager()
     let playlists = PlaylistStore.shared
 
@@ -502,7 +506,7 @@ struct InspectorDrawer: View {
 
             switch tab {
             case .library: libraryTab
-            case .effects: placeholder(settings.t("effectsSoon"))
+            case .effects: effectsTab
             case .utilities: utilitiesTab
             }
 
@@ -870,6 +874,111 @@ struct InspectorDrawer: View {
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(12)
+    }
+
+    // MARK: Effects tab (#16 spectrum visualizer, #17 EQ)
+
+    /// The visualizer runs only while this tab is on screen: the tap itself stays
+    /// installed (it is just a copy into a ring buffer) but the FFT and the 30 Hz
+    /// timer are switched off, so a player who never opens the drawer pays
+    /// nothing for it.
+    private var effectsTab: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(settings.t("spectrumTitle"))
+                    .font(settings.scaled(13).weight(.medium))
+                Spacer()
+                if store.spectrum.hasSignal {
+                    Text(levelText)
+                        .font(settings.systemMono(10))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            SpectrumBars(analyzer: store.spectrum,
+                         accent: settings.palette.accent,
+                         secondary: settings.palette.folderColor)
+                .frame(height: 120)
+                .overlay {
+                    if !store.spectrum.hasSignal {
+                        Text(settings.t("spectrumIdle"))
+                            .font(settings.scaled(11))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 24)
+                    }
+                }
+
+            spectrumAxis
+
+            Divider().overlay(settings.palette.divider)
+            Text(settings.t("effectsSoon"))
+                .font(settings.scaled(11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onAppear { store.spectrum.setActive(true) }
+        .onDisappear { store.spectrum.setActive(false) }
+    }
+
+    private var levelText: String {
+        guard store.spectrum.hasSignal else { return settings.t("spectrumIdle") }
+        guard let db = store.spectrum.peakDecibels else { return "-inf dB" }
+        return String(format: "%+.1f dB", db)
+    }
+
+    /// Decade labels under the bars. Bands are log-spaced, so labelling the
+    /// powers of ten lines up almost exactly with the bar positions.
+    private var spectrumAxis: some View {
+        GeometryReader { geo in
+            let bands = store.spectrum.bars.count
+            ZStack(alignment: .topLeading) {
+                ForEach(axisTicks, id: \.hz) { tick in
+                    if tick.index != nil, bands > 0 {
+                        let slot = geo.size.width / CGFloat(bands)
+                        Text(axisLabel(tick.hz))
+                            .font(settings.scaled(9))
+                            .foregroundStyle(.secondary)
+                            .fixedSize()
+                            .alignmentGuide(.leading) { dim in
+                                // Centre each label on its bar, but keep the first
+                                // one inside the axis instead of hanging it off
+                                // the left edge.
+                                let centre = CGFloat(tick.index!) * slot + slot / 2
+                                return tick.index == 0 ? 2 : centre - dim.width / 2
+                            }
+                    }
+                }
+            }
+            .frame(height: geo.size.height, alignment: .topLeading)
+        }
+        .frame(height: 12)
+    }
+
+    private struct AxisTick {
+        let hz: Double
+        /// Nil until the analyser has a device rate and can map bins to bands.
+        let index: Int?
+    }
+
+    private var axisTicks: [AxisTick] {
+        [100.0, 1_000.0, 10_000.0].map { AxisTick(hz: $0, index: bandIndex(for: $0)) }
+    }
+
+    /// First band whose centre frequency reaches `hz`.
+    private func bandIndex(for hz: Double) -> Int? {
+        for i in 0..<store.spectrum.bars.count {
+            guard let f = store.spectrum.bandFrequency(i) else { continue }
+            if f >= hz { return i }
+        }
+        return nil
+    }
+
+    private func axisLabel(_ hz: Double) -> String {
+        hz >= 1000 ? "\(Int(hz / 1000))k" : "\(Int(hz))"
     }
 
     private func importPlaylist() {

@@ -6,6 +6,7 @@
 #include "dumb.h"
 #include "stb_vorbis.c" /* declarations only (no STB_VORBIS_IMPLEMENTATION here) */
 #include "wavpack.h"
+#include "FLAC/stream_decoder.h"
 
 #define OUT_RATE 44100
 /* DUMB delta_time = 65536 (units/sec) / output rate: fixed-point seconds per
@@ -19,7 +20,8 @@ enum dec_kind {
     DEC_KIND_DUMB,
     DEC_KIND_VORBIS,
     DEC_KIND_VOC,
-    DEC_KIND_WAVPACK
+    DEC_KIND_WAVPACK,
+    DEC_KIND_OGGFLAC
 };
 
 struct dec_decoder {
@@ -57,6 +59,18 @@ struct dec_decoder {
     int32_t *wv_buf;       /* interleaved int32 scratch, channels * WV_CHUNK */
     long wv_buf_frames;    /* frames currently valid in wv_buf */
     long wv_buf_used;      /* frames already consumed from wv_buf */
+
+    /* Ogg FLAC (libFLAC + libogg, BSD - vendored under vendored/flac+ogg) */
+    struct of_stream *of;
+    FLAC__StreamDecoder *of_dec;
+    int32_t *of_buf;       /* interleaved int32 staging, of_buf_cap frames */
+    long of_buf_cap;       /* capacity in int32 samples */
+    long of_buf_frames;    /* frames currently valid in of_buf */
+    long of_buf_used;      /* frames already consumed from of_buf */
+    int of_channels;
+    unsigned int of_rate;
+    double of_scale;       /* 1 / full-scale for of_buf's fixed-point samples */
+    int of_failed;         /* decoder reported an error / end of stream */
 };
 
 /* ------------------------------------------------------------------ */
@@ -527,15 +541,63 @@ static long wavpack_ensure(dec_decoder *d, long frames) {
     return got < frames ? (long)got : frames;
 }
 
-static float wavpack_value(dec_decoder *d, int32_t raw) {
-    if (d->wv_is_float) {
+/* One interleaved int32 sample -> normalized f32. WavPack hands back IEEE
+   float in the same int32 slot; fixed point arrives at whatever scale the
+   container documents, hence the explicit `scale` (1 / full-scale-value). */
+static float pcm_value(int32_t raw, int is_float, double scale) {
+    if (is_float) {
         float f;
         memcpy(&f, &raw, sizeof(f));
         if (f > 1.0f) f = 1.0f;
         if (f < -1.0f) f = -1.0f;
         return f;
     }
-    return (float)(((double)raw) * (1.0 / 2147483648.0));
+    return (float)(((double)raw) * scale);
+}
+
+/* Converts up to `have` frames of interleaved int32 `src` (`nch` channels at
+   `rate`) into `out` as stereo @OUT_RATE, downmixing to the first two channels
+   and running the shared linear resampler when the rates differ. `*filled` is
+   the caller's in/out output frame count; returns source frames consumed. */
+static long pcm_to_stereo(dec_decoder *d, const int32_t *src, int nch,
+                          int is_float, double scale, unsigned int rate,
+                          long have, float *out, long cap, long *filled) {
+    int direct = (rate == OUT_RATE);
+    double step = (double)rate / (double)OUT_RATE;
+    long i;
+
+    for (i = 0; i < have && *filled < cap; i++) {
+        const int32_t *frame = src + i * nch;
+        float l, r;
+        if (nch >= 2) {
+            l = pcm_value(frame[0], is_float, scale);
+            r = pcm_value(frame[1], is_float, scale);
+        } else {
+            l = r = pcm_value(frame[0], is_float, scale);
+        }
+        if (direct) {
+            out[*filled * 2] = l;
+            out[*filled * 2 + 1] = r;
+            (*filled)++;
+        } else {
+            double frac = d->res_frac;
+            while (frac < 1.0 && *filled < cap) {
+                float pl = d->res_prev_l, pr = d->res_prev_r;
+                if (!d->res_has_prev) { pl = l; pr = r; }
+                out[*filled * 2] = (float)(pl + (l - pl) * frac);
+                out[*filled * 2 + 1] = (float)(pr + (r - pr) * frac);
+                (*filled)++;
+                frac += step;
+            }
+            frac -= 1.0;
+            if (frac < 0) frac = 0;
+            d->res_frac = frac;
+            d->res_prev_l = l;
+            d->res_prev_r = r;
+            d->res_has_prev = 1;
+        }
+    }
+    return i;
 }
 
 /* Renders up to `frames` stereo @OUT_RATE frames, resampling and downmixing
@@ -543,47 +605,260 @@ static float wavpack_value(dec_decoder *d, int32_t raw) {
    kind is ever active per decoder. */
 static long wavpack_fill(dec_decoder *d, float *out, long frames) {
     long filled = 0;
-    int nch = d->wv_channels;
-    int direct = (d->wv_rate == OUT_RATE);
-    double step = (double)d->wv_rate / (double)OUT_RATE;
-
     while (filled < frames) {
         long have = wavpack_ensure(d, frames - filled);
         if (have <= 0) break;
-        const int32_t *src = d->wv_buf + d->wv_buf_used * nch;
+        long used = pcm_to_stereo(d, d->wv_buf + d->wv_buf_used * d->wv_channels,
+                                  d->wv_channels, d->wv_is_float,
+                                  1.0 / 2147483648.0, d->wv_rate, have, out,
+                                  frames, &filled);
+        if (used <= 0) break;
+        d->wv_buf_used += used;
+    }
+    return filled;
+}
+
+/* ------------------------------------------------------------------ */
+/* Ogg FLAC (libFLAC + libogg, BSD/Xiph - vendored under vendored/flac, */
+/* vendored/ogg). libFLAC owns the Ogg framing, so only the raw file     */
+/* bytes are exposed to it as a read-only memory stream.                  */
+/* ------------------------------------------------------------------ */
+
+struct of_stream {
+    const unsigned char *data;
+    long size;
+    long pos;
+    dec_decoder *d;        /* NULL until the decoder is fully accepted */
+    FLAC__uint64 total;    /* STREAMINFO total samples, 0 = unknown */
+    unsigned int rate;     /* STREAMINFO sample rate */
+    unsigned int bps;      /* STREAMINFO bits per sample */
+    int channels;          /* STREAMINFO channel count */
+};
+
+static FLAC__StreamDecoderReadStatus of_read(const FLAC__StreamDecoder *dec,
+                                             FLAC__byte buf[], size_t *bytes,
+                                             void *cd) {
+    struct of_stream *s = (struct of_stream *)cd;
+    size_t want = *bytes;
+    if (s->pos >= s->size) {
+        *bytes = 0;
+        return FLAC__STREAM_DECODER_READ_STATUS_END_OF_STREAM;
+    }
+    if ((size_t)(s->size - s->pos) < want) want = (size_t)(s->size - s->pos);
+    memcpy(buf, s->data + s->pos, want);
+    s->pos += (long)want;
+    *bytes = want;
+    return FLAC__STREAM_DECODER_READ_STATUS_CONTINUE;
+}
+
+static FLAC__StreamDecoderSeekStatus of_seek(const FLAC__StreamDecoder *dec,
+                                             FLAC__uint64 abs, void *cd) {
+    struct of_stream *s = (struct of_stream *)cd;
+    (void)dec;
+    if (abs > (FLAC__uint64)s->size) return FLAC__STREAM_DECODER_SEEK_STATUS_ERROR;
+    s->pos = (long)abs;
+    return FLAC__STREAM_DECODER_SEEK_STATUS_OK;
+}
+
+static FLAC__StreamDecoderTellStatus of_tell(const FLAC__StreamDecoder *dec,
+                                             FLAC__uint64 *abs, void *cd) {
+    struct of_stream *s = (struct of_stream *)cd;
+    (void)dec;
+    *abs = (FLAC__uint64)s->pos;
+    return FLAC__STREAM_DECODER_TELL_STATUS_OK;
+}
+
+static FLAC__StreamDecoderLengthStatus of_length(const FLAC__StreamDecoder *dec,
+                                                 FLAC__uint64 *len, void *cd) {
+    struct of_stream *s = (struct of_stream *)cd;
+    (void)dec;
+    *len = (FLAC__uint64)s->size;
+    return FLAC__STREAM_DECODER_LENGTH_STATUS_OK;
+}
+
+static FLAC__bool of_eof(const FLAC__StreamDecoder *dec, void *cd) {
+    struct of_stream *s = (struct of_stream *)cd;
+    (void)dec;
+    return s->pos >= s->size ? true : false;
+}
+
+/* Grows the interleaved staging buffer so it can hold `frames` frames of
+   `nch` channels. */
+static int of_reserve(dec_decoder *d, long frames, int nch) {
+    long need = frames * nch;
+    if (need <= d->of_buf_cap) return 1;
+    long cap = d->of_buf_cap ? d->of_buf_cap : (long)nch * 4096;
+    while (cap < need) cap *= 2;
+    int32_t *p = (int32_t *)realloc(d->of_buf, (size_t)cap * sizeof(int32_t));
+    if (!p) return 0;
+    d->of_buf = p;
+    d->of_buf_cap = cap;
+    return 1;
+}
+
+static FLAC__StreamDecoderWriteStatus of_write(const FLAC__StreamDecoder *dec,
+                                                const FLAC__Frame *frame,
+                                                const FLAC__int32 *const buf[],
+                                                void *cd) {
+    struct of_stream *s = (struct of_stream *)cd;
+    dec_decoder *d = s->d;
+    (void)dec;
+    if (!d) return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
+    long bs = (long)frame->header.blocksize;
+    int nch = (int)frame->header.channels;
+    long base = d->of_buf_used;   /* append after anything still pending */
+    /* libFLAC hands out samples right-justified to the file's bit depth, so
+     * the full-scale value is 2^(bps-1) - not 2^31 as for WavPack. A frame
+     * header of 0 means "same as STREAMINFO". */
+    {
+        unsigned int bps = frame->header.bits_per_sample ? frame->header.bits_per_sample : s->bps;
+        d->of_scale = (bps >= 1 && bps <= 32) ? scalbn(1.0, -(int)(bps - 1)) : (1.0 / 2147483648.0);
+    }
+    if (nch < 1 || bs < 1) return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
+    if (!of_reserve(d, base + bs, nch)) return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
+    {
         long i;
-        for (i = 0; i < have && filled < frames; i++) {
-            const int32_t *frame = src + i * nch;
-            float l, r;
-            if (nch >= 2) {
-                l = wavpack_value(d, frame[0]);
-                r = wavpack_value(d, frame[1]);
-            } else {
-                l = r = wavpack_value(d, frame[0]);
-            }
-            if (direct) {
-                out[filled * 2] = l;
-                out[filled * 2 + 1] = r;
-                filled++;
-            } else {
-                double frac = d->res_frac;
-                while (frac < 1.0 && filled < frames) {
-                    float pl = d->res_prev_l, pr = d->res_prev_r;
-                    if (!d->res_has_prev) { pl = l; pr = r; }
-                    out[filled * 2] = (float)(pl + (l - pl) * frac);
-                    out[filled * 2 + 1] = (float)(pr + (r - pr) * frac);
-                    filled++;
-                    frac += step;
-                }
-                frac -= 1.0;
-                if (frac < 0) frac = 0;
-                d->res_frac = frac;
-                d->res_prev_l = l;
-                d->res_prev_r = r;
-                d->res_has_prev = 1;
-            }
+        int c;
+        for (i = 0; i < bs; i++) {
+            int32_t *dst = d->of_buf + (base + i) * nch;
+            for (c = 0; c < nch; c++) dst[c] = buf[c][i];
         }
-        d->wv_buf_used += i;
+    }
+    d->of_buf_frames = base + bs;
+    d->of_channels = nch;
+    return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
+}
+
+/* libFLAC only publishes sample_rate/channels/blocksize to its getters once the
+   first AUDIO frame has been decoded (stream_decoder.c copies them out of the
+   frame header), so STREAMINFO is the only source available at open time. */
+static void of_metadata(const FLAC__StreamDecoder *dec,
+                        const FLAC__StreamMetadata *meta, void *cd) {
+    struct of_stream *s = (struct of_stream *)cd;
+    (void)dec;
+    if (meta->type == FLAC__METADATA_TYPE_STREAMINFO) {
+        s->total = meta->data.stream_info.total_samples;
+        s->rate = meta->data.stream_info.sample_rate;
+        s->bps = meta->data.stream_info.bits_per_sample;
+        s->channels = (int)meta->data.stream_info.channels;
+    }
+}
+
+static void of_error(const FLAC__StreamDecoder *dec,
+                     FLAC__StreamDecoderErrorStatus status, void *cd) {
+    struct of_stream *s = (struct of_stream *)cd;
+    (void)dec;
+    (void)status;
+    if (s->d) s->d->of_failed = 1;
+}
+
+static void oggflac_teardown(dec_decoder *d) {
+    if (d->of_dec) {
+        FLAC__stream_decoder_finish(d->of_dec);
+        FLAC__stream_decoder_delete(d->of_dec);
+        d->of_dec = NULL;
+    }
+    if (d->of) {
+        d->of->d = NULL;   /* no callback may touch d after this point */
+        free(d->of);
+        d->of = NULL;
+    }
+    free(d->of_buf);
+    d->of_buf = NULL;
+    d->of_buf_cap = 0;
+    d->of_buf_frames = 0;
+    d->of_buf_used = 0;
+}
+
+/* The Ogg "identification" packet is page 0, always uncompressed. libFLAC's Ogg
+   encoder repacketizes the native FLAC stream verbatim, so page 0 holds exactly
+   one segment whose payload starts with the FLAC magic:
+     0..3 "OggS"  4 version(0)  5 header type  6..13 granule
+     14..17 serial  18..21 seq  22..25 CRC     26 segment count N
+     27..27+N-1 segment table, packet body at 27+N
+   Both encodings of that first packet are accepted: the native magic libFLAC
+   writes (0x7F "FLAC") and the Xiph mapping header ("\x01FLAC"). Cheap enough to
+   run before the stb_vorbis open (whole-file copy + hash table) so .oga never
+   pays for a decoder it will not use. */
+static int ogg_is_flac(const unsigned char *bytes, size_t size) {
+    unsigned n;
+    size_t start;
+    if (size < 32) return 0;
+    if (memcmp(bytes, "OggS", 4) != 0 || bytes[4] != 0x00) return 0;
+    n = bytes[26];
+    if (n < 1 || n > 16) return 0;           /* a single small id packet */
+    start = 27u + n;
+    if (start + 5 > size) return 0;
+    return memcmp(bytes + start, "\x7f" "FLAC", 5) == 0
+        || memcmp(bytes + start, "\x01" "FLAC", 5) == 0;
+}
+
+static int oggflac_open(dec_decoder *d) {
+    struct of_stream *s = (struct of_stream *)calloc(1, sizeof(struct of_stream));
+    FLAC__StreamDecoder *dec = FLAC__stream_decoder_new();
+    if (!s || !dec) {
+        free(s);
+        if (dec) FLAC__stream_decoder_delete(dec);
+        return 0;
+    }
+    s->data = d->data;
+    s->size = d->size;
+    s->pos = 0;
+
+    if (FLAC__stream_decoder_init_ogg_stream(dec, of_read, of_seek, of_tell,
+                                             of_length, of_eof, of_write,
+                                             of_metadata, of_error, s)
+        != FLAC__STREAM_DECODER_INIT_STATUS_OK) {
+        FLAC__stream_decoder_delete(dec);
+        free(s);
+        return 0;
+    }
+    if (!FLAC__stream_decoder_process_until_end_of_metadata(dec)
+        || s->rate == 0 || s->channels < 1) {
+        FLAC__stream_decoder_finish(dec);
+        FLAC__stream_decoder_delete(dec);
+        free(s);
+        return 0;
+    }
+    if (s->total == 0) s->total = FLAC__stream_decoder_get_total_samples(dec);
+
+    d->kind = DEC_KIND_OGGFLAC;
+    d->of = s;
+    d->of_dec = dec;
+    d->of_channels = s->channels;
+    d->of_rate = s->rate;
+    d->of_failed = 0;
+    s->d = d;
+    if (s->total > 0) d->duration = (double)s->total / (double)d->of_rate;
+    return 1;
+}
+
+/* Renders up to `frames` stereo @OUT_RATE frames, pulling one FLAC frame at a
+   time and pushing it through the shared resampler. */
+static long oggflac_fill(dec_decoder *d, float *out, long frames) {
+    long filled = 0;
+    int idle = 0;
+
+    while (filled < frames) {
+        if (d->of_buf_used >= d->of_buf_frames) {
+            if (!d->of_dec || d->of_failed) break;
+            if (!FLAC__stream_decoder_process_single(d->of_dec)) {
+                d->of_failed = 1;   /* clean end of stream */
+                break;
+            }
+            if (d->of_buf_used >= d->of_buf_frames && ++idle > 8) break;
+            continue;
+        }
+        idle = 0;
+        {
+            int nch = d->of_channels;
+            long have = d->of_buf_frames - d->of_buf_used;
+            long used = pcm_to_stereo(d, d->of_buf + d->of_buf_used * nch,
+                                      nch, 0, d->of_scale, d->of_rate, have,
+                                      out, frames, &filled);
+            if (used <= 0) break;
+            d->of_buf_used += used;
+        }
     }
     return filled;
 }
@@ -603,6 +878,12 @@ void *dec_open(const void *data, size_t size) {
 
     if (size >= 4 && memcmp(bytes, "OggS", 4) == 0) {
         int err = 0;
+        /* Fast path: the mapping sniff is exact for anything libFLAC or the Xiph
+           tools write, so .oga never pays for a stb_vorbis open. The unguarded
+           oggflac_open() below stays as a fallback so that an unrecognized-but-
+           still-FLAC mapping degrades to "decodes" rather than to "unsupported". */
+        if (ogg_is_flac(bytes, size) && oggflac_open(d)) return d;
+
         stb_vorbis *v = stb_vorbis_open_memory(d->data, (int)size, &err, NULL);
         if (v) {
             stb_vorbis_info info = stb_vorbis_get_info(v);
@@ -617,8 +898,11 @@ void *dec_open(const void *data, size_t size) {
             }
             stb_vorbis_close(v);
         }
-        /* An Ogg container that is not decodable vorbis is still an Ogg file,
+        if (oggflac_open(d)) return d;
+
+        /* An Ogg container that is neither vorbis nor FLAC is still an Ogg file,
            never a tracker module: stop here instead of falling through. */
+        d->kind = DEC_KIND_NONE;
         free(d->data);
         free(d);
         return NULL;
@@ -685,6 +969,9 @@ void dec_close(void *vd) {
             free(d->wv_src);
             free(d->wv_buf);
             break;
+        case DEC_KIND_OGGFLAC:
+            oggflac_teardown(d);
+            break;
         default:
             break;
     }
@@ -736,6 +1023,9 @@ long dec_render(void *vd, float *out, long frames) {
         }
         case DEC_KIND_WAVPACK:
             produced = wavpack_fill(d, out, frames);
+            break;
+        case DEC_KIND_OGGFLAC:
+            produced = oggflac_fill(d, out, frames);
             break;
         default:
             return 0;
@@ -796,6 +1086,23 @@ int dec_seek(void *vd, double seconds) {
             if (!WavpackSeekSample64(d->wv, target)) return 0;
             d->wv_buf_frames = 0;
             d->wv_buf_used = 0;
+            d->res_frac = 0;
+            d->res_has_prev = 0;
+            d->pos_frames = (long)(seconds * (double)OUT_RATE);
+            return 1;
+        }
+        case DEC_KIND_OGGFLAC: {
+            if (!d->of_dec) return 0;
+            if (seconds < 0) seconds = 0;
+            FLAC__uint64 target = (FLAC__uint64)(seconds * (double)d->of_rate + 0.5);
+            /* Clear the staging FIRST: libFLAC writes the frame that contains
+               `target`, trimmed to start exactly at it, from inside
+               seek_absolute(). Keeping that frame staged is what makes the
+               seek sample accurate - discarding it would skip a whole block. */
+            d->of_buf_frames = 0;
+            d->of_buf_used = 0;
+            if (!FLAC__stream_decoder_seek_absolute(d->of_dec, target)) return 0;
+            d->of_failed = 0;
             d->res_frac = 0;
             d->res_has_prev = 0;
             d->pos_frames = (long)(seconds * (double)OUT_RATE);

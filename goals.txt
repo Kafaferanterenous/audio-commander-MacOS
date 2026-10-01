@@ -1,6 +1,6 @@
 AudioCommander — Goal Backlog (merged formats + features)
-Created 2026-09-23. Status as of build 29 (v0.6.2 released 2026-09-28; b29 = current work).
-12/25 goals complete (48%).
+Created 2026-09-23. Status as of build 31 (v0.6.2 released 2026-09-28; b31 =
+current work). 14/25 goals complete (56%).
 (F) = format playback, (X) = app feature. Effort: lowest = easiest.
 
 DONE (b18..b22, shipped in v0.6.1):
@@ -18,10 +18,10 @@ DONE (b23..b29, built, awaiting user verification/release):
  11. (F) WavPack              45%   libwavpack 5.9.0 (BSD 2-Clause) vendored
  12. (X) Drag & drop          45%   Finder -> pane copies in + refreshes
  13. (X) Mini player          45%   floating panel OUTSIDE the drawer (b29)
+ 15. (F) Ogg FLAC             55%   libFLAC + Ogg container (b30)
+ 16. (X) Spectrum visualizer  55%   drawer tab (Effects), b31
 
-REMAINING (priority order; #15/#16 moved above #14 on user request 2026-09-29):
- 15. (F) Ogg FLAC             55%   libFLAC + Ogg container
- 16. (X) Spectrum visualizer  55%   drawer tab (Effects)
+REMAINING (priority order):
  14. (X) Gapless/crossfade    50%   engine scheduling
  17. (X) 10-band EQ           55%   drawer tab (Effects)
 18. (F) DSD DSF/DFF          60%   DSD->PCM decimation needed
@@ -30,13 +30,35 @@ REMAINING (priority order; #15/#16 moved above #14 on user request 2026-09-29):
 21. (X) MP3 ID3 meta editor  65%   drawer tab (TagLib or ID3v2 writer)
 22. (F) APE                  70%   MAC library, streaming awkward
 23. (X) MIDI instrument/bank 75%   AVMIDIPlayer no bank API; sampler risky
-24. (F) WMA                  85%   FFmpeg-only decoder
-25. (F) WMAPro               90%   even heavier
+ 24. (F) WMA                  85%   FFmpeg-only decoder
+ 25. (F) WMAPro               90%   even heavier
+
+DONE detail for #15 (b30): vendored libFLAC + libogg (both BSD/Xiph, matches the
+project's permissive-only policy) under vendored/flac + vendored/ogg. New
+DEC_KIND_OGGFLAC in vendored/decoders/decoders.c; an Ogg FLAC file is now
+decoded by libFLAC through the existing pcm_to_stereo path, so it gets the same
+resampler/SEEK/END_OF_STREAM behaviour as WavPack and can play alongside Ogg
+Vorbis in one queue. Fixtures: tools/fixtures/*.oga (8/16/24/32-bit, mono,
+stereo, 5ch, 22.05/44.1/96 kHz) plus reference .oga files from the reference
+`flac` CLI for cross-verification.
 
 PERMANENTLY PARKED / SKIPPED (revisit only on explicit request):
 - MIDI volume (needs sampler engine, stalls on real HW)
 - GM drums channel 10 (same)
-- WavPack DONE in b27 (#11). APE/DSD/WMA still only via #15/#18/#20/#22/#24/#25
+- WavPack DONE in b27 (#11), Ogg FLAC DONE in b30 (#15).
+  APE/DSD/WMA still only via #18/#20/#22/#24/#25
+
+DONE detail for #16 (b31): Effects drawer tab with a 64-band log-spaced
+spectrum, peak-hold caps, dBFS readout and decade axis labels. Hand-rolled
+radix-2 FFT (src/Spectrum.swift) after vDSP's split-complex real FFT packing was
+found to halve bin numbering; DSP split into a testable SpectrumCore.
+tools/test_spectrum/main.swift compiles the production source and passes 52
+checks (FFT vs naive DFT, tone->bin at 44.1/48/96 kHz, band mapping, level
+scaling, ring wrap, stereo downmix). Found and fixed 3 real bugs: Float->Double
+ring read after wrap, unnormalized magnitudes, and a -6 dBFS ceiling that
+clipped ordinary material.
+
+WIP (not counted in the 14/25): real-Mac playback verification for b23..b31.
 
 ARCHIVED — LICENSING UNCLEAR (removed from active goals 2026-09-28; do not
 pursue without a clean, redistributable licence that fits the project policy of
@@ -82,3 +104,10 @@ OTHER OPEN ITEMS:
 - Verify b27 WavPack on the real Mac: a .wv must show a duration in the pane,
   play through the stereo device, and scrub without stalling. Fixtures live in
   tools/fixtures/*.wv (16/24/32-bit, float, 96 kHz, mono, 5.1, hybrid).
+- Verify b30 Ogg FLAC on the real Mac: an .oga must show a duration in the pane,
+  play through the stereo device, and scrub without stalling. Fixtures are
+  tools/fixtures/*.oga (8/16/24/32-bit, mono, stereo, 5ch, 22.05/44.1/96 kHz).
+  Also worth a real-world file or two — FLAC-in-Ogg as written by foobar2000 or
+  a hardware recorder — since those may use the "\x01FLAC" mapping header rather
+  than the 0x7F "FLAC" form the vendored encoder writes. Queue an .ogg Vorbis
+  track and an .oga track together and confirm both play.

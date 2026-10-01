@@ -957,3 +957,124 @@ Journal for this build was written on 2026-09-30; the code itself landed on
 - NEXT: #15 Ogg FLAC (55%) — vendored libFLAC + an Ogg container reader, using
   the b27 WavPack work as the template for adding a format. #16 Spectrum
   visualizer (55%) is the other candidate and is pure UI (Effects tab).
+
+b30 — GOAL #15: OGG FLAC (libFLAC + libogg)  [DONE, built + verified]
+Follows the b27 WavPack template (vendored permissive lib + a DEC_KIND in
+decoders.c + tools/fixtures + a dedicated harness), which is now the proven way
+to add a lossless format to this project.
+- VENDORED (both permissive, so the project's licence policy holds):
+  * vendored/flac  libFLAC + vendored/ogg libogg (BSD-3-clause / Xiph).
+  * tools/vendor_flac.sh fetches and stages both, tools/flac_config.h is the
+    hand-written config.h (HAVE_LROUND is defined there so share/compat.h does
+    NOT declare its own static lround, which would collide with <math.h>).
+  * build.sh gains -DHAVE_CONFIG_H=1 -DNDEBUG -DFLAC__OVERFLOW_DETECT plus the
+    flac/ogg include paths. NDEBUG matters: without it libFLAC's share/private.h
+    turns on dfprintf and the encoder's CPU-info dump.
+  * vendored/flac/src/libFLAC/deduplication/*.c are function-body fragments that
+    bitreader.c / lpc.c #include — compiling them standalone is an error, so
+    both build scripts filter that path out of the `find vendored -name '*.c'`.
+  * The FLAC *encoder* objects (stream_encoder.c, ogg_encoder_aspect.c) are in
+    the same static archive as the app's. Because it is a static archive the app
+    never pulls them in — confirmed via nm (only the _ogg_stream decoder entry
+    and ogg_sync_pageout are linked) — so fixture tooling costs the app nothing.
+    App size 5.6 -> 5.8 MB is the decoder only.
+- DECODER — vendored/decoders/decoders.c, new DEC_KIND_OGGFLAC:
+  * libFLAC owns the Ogg framing, so only a raw-memory read/seek/tell/length/eof
+    callback set is needed (of_read..of_eof); libogg's framing.c does the rest.
+  * of_write converts libFLAC's per-frame channel pointers to the decoder's
+    planar float buffers and pushes them through the SAME pcm_to_stereo helper
+    WavPack/Vorbis/DUMB use, so Ogg FLAC inherits the shared resampler and the
+    shared SEEK/END_OF_STREAM handling for free.
+  * of_metadata is load-bearing and not obvious: libFLAC only publishes
+    sample_rate/channels/blocksize to its getters once the first AUDIO frame is
+    decoded, so STREAMINFO is the only way to know the stream's shape at open
+    time. Duration comes from STREAMINFO total_samples.
+  * of_error latches of_failed so a mid-stream FLAC error ends playback cleanly
+    rather than spinning.
+  * oggflac_teardown clears of_stream.d BEFORE freeing it, so no late libFLAC
+    callback can touch freed memory.
+- PROBE ORDER — dec_open() now sniffs the Ogg mapping FIRST, before stb_vorbis:
+  ogg_is_flac() is a cheap exact check on page 0 (see the comment for the header
+  layout). Two encodings are accepted: the native 0x7F "FLAC" magic that libFLAC's
+  own Ogg encoder writes, and the Xiph "\x01FLAC" mapping header other tools
+  write. This matters because stb_vorbis_open_memory copies the whole file into
+  its own buffer and builds a hash table — pure waste for every .oga.
+  The unguarded oggflac_open() call is KEPT after the vorbis attempt as a
+  fallback, so an unrecognized-but-still-FLAC mapping degrades to "decodes"
+  rather than to "unsupported". I wrote the sniff wrong on the first attempt
+  (assumed the mapping packet was at offset 5, then 27); the fixtures caught it
+  immediately and the real layout is the repacketized native magic at
+  27 + segment_count. Tests are why this was cheap to fix.
+- TESTS:
+  * tools/build_tools.sh [asan] builds flacgen (fixture encoder), test_oggflac
+    and test_decoders against the same vendored sources the app links, in a
+    normal and an AddressSanitizer flavour.
+  * tools/test_oggflac.c: 652 checks, 0 failures, and identical under ASan.
+    Covers 8/16/24/32-bit, mono/stereo/5ch, 22.05/44.1/96 kHz, sample-exactness
+    of the rendered PCM, mono->L/R duplication, 5ch->first-two-channels,
+    resampling, position tracking, per-spec seek chains (80%->20%->50%, back to
+    zero, negative clamp, past-the-end, near-end), page-boundary and mid-page
+    truncation, bit-flipped audio regions, destroyed frame magic, destroyed
+    mapping magic, wrong page version, empty segment table, "OggS" alone,
+    OggS+random, empty input, and a dec_open-buffer-aliasing check.
+  * CROSS-VERIFIED against the reference `flac` CLI's own Ogg output (same
+    bit-exactness and seek assertions), so this is not just self-consistent.
+  * test_decoders still ALL PASS (tracker/VOC/WavPack untouched).
+- VERIFIED (2026-10-01): ./build.sh clean -> universal (x86_64 + arm64),
+  ad-hoc signed, 5.8 MB; the app launches, stays alive past 7 s and quits
+  cleanly; nm confirms FLAC__stream_decoder_init_ogg_stream + ogg_sync_pageout
+  are linked and the encoder symbols are not. Playback through the real audio
+  device cannot be asserted from this VM — verify on the real Mac: an .oga
+  shows a duration in the pane, plays, and scrubs; queue an .ogg Vorbis track
+  and an .oga track together and confirm both work. Also try a real-world FLAC-
+  in-Ogg from another tool (foobar2000 / a hardware recorder), since those may
+  use the "\x01FLAC" mapping header rather than the 0x7F form we generate.
+- Info.plist unchanged at 29. goals.txt now 13/25 (52%). No release cut: v0.6.2
+  on GitHub is still build 27, so b28 + b29 + b30 are all unreleased.
+- NEXT: #16 Spectrum visualizer (55%) — drawer Effects tab, pure UI, no new
+  decoder. #14 gapless/crossfade is the other candidate (engine scheduling).
+
+--- build 31 (b31) — #16 Spectrum visualizer COMPLETE ---
+- Effects drawer tab now shows a live log-spaced spectrum (64 bands, 30 Hz–16 kHz)
+  with peak-hold caps, a dBFS readout and decade axis labels.
+- FFT: started on vDSP.FFT<DSPSplitComplex> and got bin numbering off by 2x
+  (1 kHz peaked at bin 23 instead of 46 at 44.1 kHz/2048). Cause is vDSP's
+  split-complex real FFT packing ([Re(0), Re(N/2), Re(1), Im(1), ...]) plus the
+  wrapper's interleaved input — a real signal fed as 2^L reals lands on even
+  indices only, halving apparent bin numbers. Replaced with a hand-rolled
+  iterative radix-2 Cooley-Tukey (Radix2FFT, separate real/imag planes, ~80
+  lines) because its bin numbering can be checked against a naive DFT, which is
+  exactly the property vDSP's packing obscured. Validated vs naive DFT for
+  n = 8/16/64/256 (max error <= 6e-13 relative).
+- Three real bugs found and fixed while writing the harness:
+  1. SpectrumCapture.latestDouble copied with Double strides from a Float ring,
+     so the app's own audio path read garbage (worse after the ring wrapped).
+     Now converts element-wise.
+  2. Magnitudes were unnormalized, so every band pinned at full scale. Scale is
+     now 4/n: a Hann-windowed cosine of amplitude A has peak bin A*n/4.
+  3. Display ceiling was -6 dBFS, which clipped a 0.5-amplitude tone (=-6 dBFS)
+     to a pinned bar. Ceiling is now true 0 dBFS, floor -72 dB.
+- Refactor: DSP (window, transform, band map) moved into a non-isolated
+  SpectrumCore so tests drive the real code; SpectrumAnalyzer keeps smoothing,
+  peak hold and the main-actor timer. SpectrumFrame carries floorDb/span so the
+  dB readout cannot drift from the bar mapping.
+- tools/test_spectrum.swift -> tools/test_spectrum/main.swift (52 checks, ALL
+  PASS): FFT vs naive DFT, impulse unit magnitude + phase, complex exponential
+  exp(-j) convention, cosine mirror at n-k, tone->bin for 50 Hz..16 kHz at
+  44.1/48/96 kHz, band monotonicity and range, band level response, level
+  scaling (10x = 20/72 of the scale), ring wrap ordering, and stereo downmix
+  (identical channels stay loud, opposite phase cancels, right-only reads 6 dB
+  down). Wired into tools/build_tools.sh; compiles src/Spectrum.swift itself,
+  so there is no test copy to drift.
+- Taps attached on the three AVAudioEngine paths in Player.swift; AVPlayer's
+  engine has no mixer to tap, so the tab shows the localized "not wired up"
+  message rather than fake silence. Analyser runs only while the tab is visible.
+- Verified: test_spectrum 52/52; test_oggflac 652/0; test_decoders ALL PASS;
+  identical under AddressSanitizer. Universal app 6.0 MB builds, launches,
+  stays alive past 9 s, quits cleanly.
+- Real-Mac check still outstanding: play a track, open the Effects tab, and
+  confirm the bars track the music; also confirm the message appears for a file
+  played through the AVPlayer path.
+- Info.plist unchanged at 29. goals.txt now 14/25 (56%). No release cut.
+- NEXT: #14 Gapless/crossfade (50%), then #17 10-band EQ (55%) which shares the
+  Effects tab now in place.

@@ -22,6 +22,11 @@ static double rms(const float *x, long n) {
     return sqrt(s / (n ? n : 1));
 }
 
+/* Loudness floor for "is there audio here". The .wv fixtures are deliberately
+   quiet (~1.5e-5 full scale) while the tracker fixtures are loud, so the floor
+   is overridable: test_decoders <file>... [--rms-floor x] */
+static double rms_floor = 0.01;
+
 static int test_file(const char *path) {
     long size = 0;
     unsigned char *data = slurp(path, &size);
@@ -43,7 +48,7 @@ static int test_file(const char *path) {
         long n = dec_render(d, buf, 1024);
         if (n <= 0) break;
         total += n;
-        if (rms(buf, n * 2) > 0.01) loud++;
+        if (rms(buf, n * 2) > rms_floor) loud++;
     }
     double rendered_secs = total / 44100.0;
     printf("   rendered %ld frames = %.3fs, loud chunks %d\n", total, rendered_secs, loud);
@@ -76,7 +81,12 @@ static int test_file(const char *path) {
 
 int main(int argc, char **argv) {
     int ok = 1;
-    for (int i = 1; i < argc; i++) ok &= test_file(argv[i]);
+    int first = 1;
+    if (argc > 3 && strcmp(argv[argc - 2], "--rms-floor") == 0) {
+        rms_floor = atof(argv[argc - 1]);
+        argc -= 2;
+    }
+    for (int i = first; i < argc; i++) ok &= test_file(argv[i]);
     printf(ok ? "ALL PASS\n" : "FAILURES\n");
     return ok ? 0 : 1;
 }

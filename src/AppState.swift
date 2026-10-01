@@ -182,6 +182,12 @@ final class AppSettings: ObservableObject {
         .system(size: size * fontScale)
     }
 
+    /// Monospaced, for readouts whose digits must not jitter as they change
+    /// (the spectrum level readout, #16).
+    func systemMono(_ size: CGFloat) -> Font {
+        .system(size: size * fontScale, design: .monospaced)
+    }
+
     func t(_ key: String) -> String {
         Self.string(key, for: language)
     }
@@ -236,8 +242,11 @@ final class AppSettings: ObservableObject {
             "renamePlaylist": "Rename…", "missingFile": "missing",
             "unsupportedFile": "unsupported", "missingN": "%d missing",
             "playFromHere": "Play from here",
+            "spectrumTitle": "Spectrum",
+            "spectrumIdle":
+                "Play something to see the spectrum. This source does not feed the analyser.",
             "effectsSoon":
-                "Equalizer, ReplayGain and the spectrum analyzer are planned for the Effects tab (#16–#19).",
+                "Equalizer and ReplayGain are planned for the Effects tab (#17, #19).",
             "utilitiesSoon":
                 "The sleep timer lives here. The metadata editor arrives with #21.",
             "copyToOther": "Copy selection to the other pane",
@@ -314,8 +323,11 @@ final class AppSettings: ObservableObject {
             "renamePlaylist": "Zmień nazwę…", "missingFile": "brak pliku",
             "unsupportedFile": "nieobsługiwany", "missingN": "%d brakujących",
             "playFromHere": "Odtwórz od tego miejsca",
+            "spectrumTitle": "Widmo",
+            "spectrumIdle":
+                "Odtwórz coś, aby zobaczyć widmo. To źródło nie zasila analizatora.",
             "effectsSoon":
-                "Korektor, ReplayGain i analizator widma pojawią się w zakładce Efekty (#16–#19).",
+                "Korektor i ReplayGain pojawią się w zakładce Efekty (#17, #19).",
             "utilitiesSoon":
                 "Tu znajduje się licznik usypiania. Edytor metadanych pojawi się w #21.",
             "copyToOther": "Kopiuj zaznaczone do drugiego panelu",
@@ -392,8 +404,11 @@ final class AppSettings: ObservableObject {
             "renamePlaylist": "Rinomina…", "missingFile": "mancante",
             "unsupportedFile": "non supportato", "missingN": "%d mancanti",
             "playFromHere": "Riproduci da qui",
+            "spectrumTitle": "Spettro",
+            "spectrumIdle":
+                "Riproduci qualcosa per vedere lo spettro. Questa sorgente non alimenta l'analizzatore.",
             "effectsSoon":
-                "Equalizzatore, ReplayGain e analizzatore di spettro arriveranno nella scheda Effetti (#16–#19).",
+                "Equalizzatore e ReplayGain arriveranno nella scheda Effetti (#17, #19).",
             "utilitiesSoon":
                 "Qui si trova il timer di sospensione. L'editor dei metadati arriva con #21.",
             "copyToOther": "Copia la selezione nell'altro pannello",
@@ -470,8 +485,9 @@ final class AppSettings: ObservableObject {
             "renamePlaylist": "重命名…", "missingFile": "文件缺失",
             "unsupportedFile": "不支持", "missingN": "%d 个缺失",
             "playFromHere": "从此处播放",
-            "effectsSoon":
-                "均衡器、ReplayGain 和频谱分析器将在“效果”标签页中提供（#16–#19）。",
+            "spectrumTitle": "频谱",
+            "spectrumIdle": "播放内容以查看频谱。此音源未接入分析器。",
+            "effectsSoon": "均衡器和 ReplayGain 将出现在“效果”标签页（#17、#19）。",
             "utilitiesSoon":
                 "睡眠定时器位于此处。标签编辑器将随 #21 一同加入。",
             "copyToOther": "将选中项复制到另一侧",

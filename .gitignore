@@ -1,10 +1,4 @@
-# macOS
-.DS_Store
-
-# Build artifacts
-build/
 dist/
-*.app
-
-# Logs
-*.log
+build/
+.DS_Store
+xcuserdata/

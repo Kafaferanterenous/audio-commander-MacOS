@@ -377,6 +377,7 @@ final class PlayerState: NSObject, ObservableObject {
             engine.attach(node)
             engine.connect(node, to: engine.mainMixerNode, format: file.processingFormat)
             engine.mainMixerNode.outputVolume = Float(volume)
+            SpectrumAnalyzer.shared.attach(to: engine)   // #16 visualizer tap
             try engine.start()
             node.scheduleFile(file, at: nil)
             node.play()
@@ -495,6 +496,7 @@ final class PlayerState: NSObject, ObservableObject {
             engine.attach(node)
             engine.connect(node, to: engine.mainMixerNode, format: format)
             engine.mainMixerNode.outputVolume = Float(volume)
+            SpectrumAnalyzer.shared.attach(to: engine)   // #16 visualizer tap
             try engine.start()
             engineC = engine
             srcNode = node
@@ -555,6 +557,7 @@ final class PlayerState: NSObject, ObservableObject {
         engine.attach(sampler)
         engine.connect(sampler, to: engine.mainMixerNode, format: nil)
         engine.mainMixerNode.outputVolume = Float(volume)
+        SpectrumAnalyzer.shared.attach(to: engine)   // #16 visualizer tap
 
         let sequencer = AVAudioSequencer(audioEngine: engine)
         do {

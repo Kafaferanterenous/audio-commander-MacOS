@@ -11,8 +11,20 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$BUILD/x86_64" "$BUILD
 
 CC="xcrun cc"
 SWIFTC="xcrun swiftc"
-CFLAGS="-O2 -w -mmacosx-version-min=13.0 -DENABLE_LEGACY -I vendored/dumb/include -I vendored/stb -I vendored/decoders -I vendored/wavpack/include -I vendored/wavpack/src"
-CSRCS=$(find vendored -name '*.c')
+# HAVE_CONFIG_H: libFLAC's sources only pick up our hand-written config.h with it.
+# HAVE_LROUND is handled inside that config.h (share/compat.h would otherwise
+# declare its own static lround and collide with <math.h>).
+# NDEBUG: libFLAC's share/private.h turns on dfprintf (and the encoder's CPU-info
+# dump) without it. FLAC__OVERFLOW_DETECT is upstream's recommended hardening.
+CFLAGS="-O2 -w -mmacosx-version-min=13.0 -DENABLE_LEGACY -DHAVE_CONFIG_H=1 \
+  -DNDEBUG -DFLAC__OVERFLOW_DETECT \
+  -I vendored/dumb/include -I vendored/stb -I vendored/decoders \
+  -I vendored/wavpack/include -I vendored/wavpack/src \
+  -I vendored/flac/include -I vendored/flac/src/libFLAC/include \
+  -I vendored/flac -I vendored/ogg/include"
+# vendored/flac/src/libFLAC/deduplication/*.c are function-body fragments that
+# bitreader.c / lpc.c #include; compiling them standalone is an error.
+CSRCS=$(find vendored -name '*.c' -not -path '*/deduplication/*')
 
 for ARCH in x86_64 arm64; do
     OBJDIR="$BUILD/$ARCH/obj"
