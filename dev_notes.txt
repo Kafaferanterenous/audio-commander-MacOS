@@ -1075,6 +1075,26 @@ to add a lossless format to this project.
 - Real-Mac check still outstanding: play a track, open the Effects tab, and
   confirm the bars track the music; also confirm the message appears for a file
   played through the AVPlayer path.
-- Info.plist unchanged at 29. goals.txt now 14/25 (56%). No release cut.
+- Info.plist now 0.6.3 / build 31. goals.txt 14/25 (56%).
 - NEXT: #14 Gapless/crossfade (50%), then #17 10-band EQ (55%) which shares the
   Effects tab now in place.
+
+--- build 31 RELEASED as v0.6.3 ---
+- Two commits pushed to Kafaferanterenous/audio-commander-MacOS (private, main):
+  8822955 feat(#16): spectrum visualizer + Ogg FLAC decoder (b31) — 118 files,
+  including the vendored libFLAC/libogg trees and the new tools/test_spectrum.
+  636418d chore: bump version to 0.6.3 (build 31) for the b28-b31 release.
+- Added .gitignore for dist/, build/, .DS_Store, xcuserdata/ — the working tree
+  was clean for the first time since b27.
+- Release v0.6.3 (build 31), prebuilt asset AudioCommander-0.6.3-macOS.zip
+  (2.1 MB, SHA-256 edd7ac47134f0540f6a29b332cd359ca3460f8758597a9ff07200963b7822aba).
+  Covers b28-b31: drag & drop, mini player, Ogg FLAC, spectrum visualizer.
+- Release verification: universal (x86_64 + arm64) confirmed with file(1) on the
+  extracted binary; codesign --verify --deep --strict passes on the app AND
+  after a ditto zip/unzip round-trip, so the seal survives packaging; plist
+  reads 0.6.3/31 from the zipped copy. Not a prerelease, marked Latest.
+- No GitHub Actions on the repo (verified: 0 workflows, and no .github/workflows
+  exists locally or on the remote). Nothing on GitHub builds anything; the
+  .app was compiled here on the macOS host per the no-CI convention.
+- Note: the repo stayed PRIVATE (checked via gh repo view).
+- NEXT: #14 Gapless/crossfade (50%), then #17 10-band EQ (55%).

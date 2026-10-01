@@ -1,6 +1,6 @@
 AudioCommander — Goal Backlog (merged formats + features)
-Created 2026-09-23. Status as of build 31 (v0.6.2 released 2026-09-28; b31 =
-current work). 14/25 goals complete (56%).
+Created 2026-09-23. Status as of build 31, RELEASED as v0.6.3 on 2026-10-01
+(previous release v0.6.2 = build 27). 14/25 goals complete (56%).
 (F) = format playback, (X) = app feature. Effort: lowest = easiest.
 
 DONE (b18..b22, shipped in v0.6.1):
@@ -58,7 +58,9 @@ scaling, ring wrap, stereo downmix). Found and fixed 3 real bugs: Float->Double
 ring read after wrap, unnormalized magnitudes, and a -6 dBFS ceiling that
 clipped ordinary material.
 
-WIP (not counted in the 14/25): real-Mac playback verification for b23..b31.
+WIP (not counted in the 14/25): real-Mac playback verification for b28..b31
+(0.6.3). b23..b27 shipped in v0.6.2 and were never confirmed on real hardware
+either.
 
 ARCHIVED — LICENSING UNCLEAR (removed from active goals 2026-09-28; do not
 pursue without a clean, redistributable licence that fits the project policy of
