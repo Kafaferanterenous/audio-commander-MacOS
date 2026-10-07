@@ -1300,3 +1300,19 @@ b33 — GOAL #17: 10-BAND EQ (Effects tab)  [DONE, built without verification]
 
 # v0.6.5 (b34) in progress — #19 ReplayGain (b32/0.6.4 previous)
 2026-10-07 saved pre-power-down. STATE: EQ/spectrum/presets COMPLETE (unpushed). ReplayGain code COMPLETE, harness 24/24, app build run was aborted mid-way (one compile error fixed: headroom Float->Double); MUST rebuild + smoke test next session. Files: src/ReplayGain.swift (BS.1770-4 core: K-weight shelf+HP biquads, 400ms/75% blocks, 2-pass gating, -0.691 offset, 89 dB target, true peak), src/ReplayGainStore.swift (decoder AVAudioFile+PullDecoder, .replaygain sidecar JSON, volumeMultiplier with peak-headroom boost clamp, album=folder mean, mode enum), Player.swift (masterMixerVolume(): volume*mode multiplier, applyVolume, mode sink, crossfade promotion applyVolume, refreshVolume()), ContentView ReplayGainSection (mode chips, scan track/folder, readout, remove), localizations. Harness tools/test_replaygain/main.swift + build_tools.sh target. Known: album boost clamp uses trackPeak fallback; no AU path for Engine B/D (AVPlayer/AVMIDIPlayer stay flat, same as EQ).
+
+# v0.6.5 (b34) — session 2026-10-08: rebuild + verify + package + release
+- Resumed after 2026-10-07 power loss. All harnesses green: replaygain 24/24,
+  equalizer 60/60, crossfade 34/34, spectrum 52/52, id3 46/46.
+- Full universal rebuild via ./build.sh (x86_64 + arm64, 7.2 MB), ad-hoc signed;
+  app launches, stays alive >14 s, no DiagnosticReports crash entries, quits
+  cleanly. Same for the final 0.6.5/34 bundle.
+- Committed eed3f0f "feat(#19): ReplayGain, EQ live-apply fix + presets,
+  spectrum idle fix (b34) v0.6.5" (12 files, +1072/-91): src/ReplayGain.swift,
+  src/ReplayGainStore.swift, tools/test_replaygain, EQ/preset/UI changes,
+  README Gatekeeper section.
+- Info.plist bumped 0.6.5 (build 34); packaged
+  dist/ship/AudioCommander-0.6.5-macOS.zip (2.5 MB) for the GitHub release.
+- goals.txt now 19/25 (76%): #19 ReplayGain DONE (pending ears test).
+- OPEN: ReplayGain + EQ real-Mac ears tests; .replaygain sidecar design still
+  unconfirmed by the user; next goals #18 DSD, #20 DTS, #22 APE.

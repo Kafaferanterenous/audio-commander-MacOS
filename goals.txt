@@ -1,6 +1,7 @@
 AudioCommander — Goal Backlog (merged formats + features)
-Created 2026-09-23. Status as of build 33 (v0.6.3 released 2026-10-01;
-b32 = #21 built but unreleased, b33 = #14 + #17 added). 18/25 goals complete (72%).
+Created 2026-09-23. Status as of build 34 (v0.6.5 packaged 2026-10-08;
+b32 = #21, b33 = #14 + #17, b34 = #19 + EQ fixes/presets + spectrum fix).
+19/25 goals complete (76%).
 (F) = format playback, (X) = app feature. Effort: lowest = easiest.
 
 DONE (b18..b22, shipped in v0.6.1):
@@ -24,9 +25,14 @@ DONE (b23..b29, built, awaiting user verification/release):
   14. (X) Gapless/crossfade    50%   engine scheduling, b33
   17. (X) 10-band EQ           55%   drawer tab (Effects), b33
 
+DONE (b34, packaged 2026-10-08):
+  19. (X) ReplayGain           60%   BS.1770-4 scan + sidecar gain, b34
+      + EQ live-apply fix (always-installed AVAudioUnitEQ, bypass toggle)
+      + 10 EQ presets (chips, persisted, en/pl/it/zh)
+      + Spectrum idle-text fix
+
 REMAINING (priority order):
   18. (F) DSD DSF/DFF          60%   DSD->PCM decimation needed
-  19. (X) ReplayGain           60%   scan + apply gain (drawer tab)
   20. (F) DTS                  65%   no small standalone decoder
   22. (F) APE                  70%   MAC library, streaming awkward
   23. (X) MIDI instrument/bank 75%   AVMIDIPlayer no bank API; sampler risky
@@ -150,12 +156,13 @@ OTHER OPEN ITEMS:
   a hardware recorder — since those may use the "\x01FLAC" mapping header rather
   than the 0x7F "FLAC" form the vendored encoder writes. Queue an .ogg Vorbis
   track and an .oga track together and confirm both play.
-# v0.6.5 (b34) in progress — #19 ReplayGain
-- [~] #19 ReplayGain: core + store + gain fold-in + UI written; harness 24/24; APP BUILD NOT YET VERIFIED (rebase run aborted, power loss) — MUST rebuild + smoke test first
+# v0.6.5 (b34) — #19 ReplayGain  [packaged 2026-10-08, released as v0.6.5]
+- [x] #19 ReplayGain: core + store + gain fold-in + UI; harness 24/24; app
+  rebuilt + smoke tested 2026-10-08 (launch OK, no crash reports)
 - [x] EQ live-apply fix (always install AVAudioUnitEQ, bypass toggle)  [EQ WAS THE "couldn't tell the difference" bug]
 - [x] Spectrum idle text now disappears when bars appear (SpectrumSectionView observes analyzer)
 - [x] 10 EQ presets (Flat/Pop/Rock/Classical/Jazz/Electronic/Hip-Hop/Bass/Vocal/Treble) + chip picker + ac_eq_preset persistence, localized en/pl/it/zh
-- [x] test_equalizer 60/60, crossfade 34/34, spectrum 52, id3 46, replaygain 24/24
-- [ ] Not pushed to GitHub yet: EQ fixes, presets, spectrum fix, ReplayGain, README Gatekeeper note (uncommitted), n/a
-- [ ] ReplayGain check list: sidecar design UNCONFIRMED by user (chosen: .replaygain JSON per file, non-destructive), real-Mac loudness/gain ears test needed
-- [ ] Release v0.6.5/b34 after verification: bump Info.plist, rebuild universal, zip dist/ship/AudioCommander-0.6.5-macOS.zip, release on Kafaferanterenous/audio-commander-MacOS
+- [x] All harnesses green 2026-10-08: equalizer 60/60, crossfade 34/34, spectrum 52, id3 46, replaygain 24/24
+- [x] Committed eed3f0f; Info.plist bumped 0.6.5/34; universal rebuild; dist/ship/AudioCommander-0.6.5-macOS.zip
+- [ ] ReplayGain real-Mac ears test: sidecar design chosen (.replaygain JSON per file, non-destructive, NON-CONFIRMED by user); scan a folder, confirm loudness readout, track/album modes audibly level, peak-headroom clamp kicks in
+- [ ] Real-Mac EQ ears test: preset chips change sound, live-apply no clicks on engine start/teardown, Engine-B (AC3) stays flat
