@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 @preconcurrency import AVFoundation
 
 enum RepeatMode: Int, CaseIterable {
@@ -56,6 +57,10 @@ final class PlayerState: NSObject, ObservableObject {
     /// as SpectrumAnalyzer: PlayerState inserts the EQ node into each engine,
     /// the tab reads/edits the same object.
     let equalizer = Equalizer.shared
+
+    /// #19 ReplayGain store. The gain it offers for the current track is folded
+    /// into the master volume whenever a track starts or the mode changes.
+    let replayGain = ReplayGainStore.shared
 
     /// Track transition behaviour (#14). Default off, so the proven
     /// stop-then-start path is untouched unless the user opts in.
@@ -129,6 +134,7 @@ final class PlayerState: NSObject, ObservableObject {
     private var ticker: Timer?
     private var sleepActivity: NSObjectProtocol?
     private var sleepTimer: Timer?
+    private var replayGainObserver: Any?
 
     var hasNext: Bool { queueIndex + 1 < queue.count || repeatMode == .all }
     var hasPrevious: Bool { queue.count > 1 || currentTime > 0.5 }
@@ -155,6 +161,9 @@ final class PlayerState: NSObject, ObservableObject {
         shuffleMode = UserDefaults.standard.bool(forKey: "ac_shuffle")
         repeatMode = RepeatMode(rawValue: UserDefaults.standard.integer(forKey: "ac_repeat")) ?? .off
         crossfade = CrossfadeOption(rawValue: UserDefaults.standard.integer(forKey: "ac_crossfade")) ?? .off
+        replayGainObserver = replayGain.$mode.sink { [weak self] _ in
+            self?.applyVolume()
+        }
     }
 
     /// Builds the play order. Shuffled starts at the requested track and
@@ -411,7 +420,7 @@ final class PlayerState: NSObject, ObservableObject {
             let node = AVAudioPlayerNode()
             engine.attach(node)
             engine.connect(node, to: engine.mainMixerNode, format: file.processingFormat)
-            engine.mainMixerNode.outputVolume = Float(volume)
+            engine.mainMixerNode.outputVolume = Float(masterMixerVolume())
             SpectrumAnalyzer.shared.attach(to: engine)   // #16 visualizer tap
             eqNodeA = Equalizer.shared.install(on: engine)   // #17 insert between mixer and output
             try engine.start()
@@ -434,7 +443,7 @@ final class PlayerState: NSObject, ObservableObject {
         let asset = AVURLAsset(url: url)
         let item = AVPlayerItem(asset: asset)
         let player = AVPlayer(playerItem: item)
-        player.volume = Float(volume)
+        player.volume = Float(masterMixerVolume())
 
         let interval = CMTime(seconds: 0.25, preferredTimescale: 600)
         fallbackTimeObserver = player.addPeriodicTimeObserver(
@@ -531,7 +540,7 @@ final class PlayerState: NSObject, ObservableObject {
             let node = AVAudioSourceNode(format: format, renderBlock: render)
             engine.attach(node)
             engine.connect(node, to: engine.mainMixerNode, format: format)
-            engine.mainMixerNode.outputVolume = Float(volume)
+            engine.mainMixerNode.outputVolume = Float(masterMixerVolume())
             SpectrumAnalyzer.shared.attach(to: engine)   // #16 visualizer tap
             eqNodeC = Equalizer.shared.install(on: engine)   // #17 insert between mixer and output
             try engine.start()
@@ -593,7 +602,7 @@ final class PlayerState: NSObject, ObservableObject {
         let engine = AVAudioEngine()
         engine.attach(sampler)
         engine.connect(sampler, to: engine.mainMixerNode, format: nil)
-        engine.mainMixerNode.outputVolume = Float(volume)
+        engine.mainMixerNode.outputVolume = Float(masterMixerVolume())
         SpectrumAnalyzer.shared.attach(to: engine)   // #16 visualizer tap
         eqNodeE = Equalizer.shared.install(on: engine)   // #17 insert between mixer and output
 
@@ -715,7 +724,7 @@ final class PlayerState: NSObject, ObservableObject {
             let node = AVAudioPlayerNode()
             engine.attach(node)
             engine.connect(node, to: engine.mainMixerNode, format: file.processingFormat)
-            engine.mainMixerNode.outputVolume = Float(volume)
+            engine.mainMixerNode.outputVolume = Float(masterMixerVolume())
             SpectrumAnalyzer.shared.attach(to: engine)
             xfEQ = Equalizer.shared.install(on: engine)
             try engine.start()
@@ -779,6 +788,7 @@ final class PlayerState: NSObject, ObservableObject {
         queueIndex = nextIndex
         currentTrack = queue[nextIndex]
         currentTime = min(max(0, elapsed), duration)
+        applyVolume()   // the promoted engine carries the outgoing track's gain
         isPlaying = true
         userPaused = false
         xfEngine = nil
@@ -928,12 +938,25 @@ final class PlayerState: NSObject, ObservableObject {
 
     // MARK: - Teardown
 
+    /// User volume with any ReplayGain gain for the current track folded in.
+    /// Recompute happens wherever a track starts and whenever volume/mode
+    /// changes, so switching a sound source never changes the loudness the
+    /// listener actually hears.
+    private func masterMixerVolume() -> Double {
+        volume * replayGain.volumeMultiplier(for: currentTrack?.url, mode: replayGain.mode)
+    }
+
+    func refreshVolume() {
+        applyVolume()
+    }
+
     private func applyVolume() {
-        audioEngine?.mainMixerNode.outputVolume = Float(volume)
-        fallbackPlayer?.volume = Float(volume)
-        engineC?.mainMixerNode.outputVolume = Float(volume)
-        eEngine?.mainMixerNode.outputVolume = Float(volume)
-        xfEngine?.mainMixerNode.outputVolume = Float(volume)
+        let v = Float(masterMixerVolume())
+        audioEngine?.mainMixerNode.outputVolume = v
+        fallbackPlayer?.volume = v
+        engineC?.mainMixerNode.outputVolume = v
+        eEngine?.mainMixerNode.outputVolume = v
+        xfEngine?.mainMixerNode.outputVolume = v
     }
 
     private func teardownPlayback() {

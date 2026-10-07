@@ -5,12 +5,40 @@ import SwiftUI
 /// Handles an inclusive biquad coefficient for a gain in decibels, on top of
 /// the RBJ peaking-filter formulae, so the harness can check the maths that the
 /// AU-level bands are configured to implement.
+/// A named 10-slot curve users can load whole; the sliders stay live afterwards.
+struct EqualizerPreset {
+    let id: String
+    let gains: [Double]
+}
+
 enum EqualizerCore {
     static let bandCount = 10
     /// The classic hardware ten-slopers: one-octave spacing, 31 Hz .. 16 kHz.
     static let centers: [Float] = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
     static let minGain: Double = -12
     static let maxGain: Double = 12
+
+    /// Popular curves derived from the classic bog-standard graphic-EQ banks
+    /// (Rock/Pop/Classical/Jazz/Electronic as played by every player app) plus
+    /// the three single-purpose boosts people actually phone the EQ for. All
+    /// gains stay inside ±12 dB and gentle enough that the summed curve cannot
+    /// clip the mixer.
+    static let presets: [EqualizerPreset] = [
+        EqualizerPreset(id: "flat", gains: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        EqualizerPreset(id: "pop", gains: [1.0, 1.5, 2.0, 1.5, 1.0, 2.0, 3.0, 2.5, 2.0, 1.5]),
+        EqualizerPreset(id: "rock", gains: [4.0, 3.0, -2.0, -4.0, -1.0, 2.0, 4.0, 5.0, 4.0, 3.0]),
+        EqualizerPreset(id: "classical", gains: [-2.0, -1.0, 0.5, 1.0, 1.0, 1.5, 2.0, 2.0, 2.5, 2.0]),
+        EqualizerPreset(id: "jazz", gains: [-1.0, 1.0, 2.0, 2.5, 2.0, 1.5, 1.0, 0.5, 0.0, -1.0]),
+        EqualizerPreset(id: "electronic", gains: [5.0, 4.5, 1.0, -1.5, -3.0, -1.5, 1.0, 3.0, 4.0, 4.5]),
+        EqualizerPreset(id: "hiphop", gains: [3.0, 4.0, 1.5, -1.0, -2.0, -2.0, -1.0, 1.0, 2.5, 3.0]),
+        EqualizerPreset(id: "bassboost", gains: [5.0, 4.0, 2.0, 1.0, 0, 0, 0, 0, 0, 0]),
+        EqualizerPreset(id: "vocalboost", gains: [-3.0, -2.0, -1.0, 0.0, 2.0, 3.5, 4.0, 3.0, 1.5, 1.0]),
+        EqualizerPreset(id: "trebleboost", gains: [0, 0, 0, 0, 0, 0.5, 1.5, 3.0, 4.5, 5.0]),
+    ]
+
+    static func preset(id: String) -> EqualizerPreset? {
+        presets.first { $0.id == id }
+    }
 
     static func clampGain(_ db: Double) -> Double {
         min(maxGain, max(minGain, db))
@@ -84,6 +112,11 @@ final class Equalizer: ObservableObject {
     @Published private(set) var gains: [Double] {
         didSet { persist(); refreshLive() }
     }
+    /// The preset currently loaded, or nil once the user nudges a slider (a
+    /// manual curve is no longer any one preset).
+    @Published private(set) var selectedPreset: String? {
+        didSet { persist() }
+    }
 
     /// Every AVAudioUnitEQ currently inserted into a live engine.
     private var installed: [AVAudioUnitEQ] = []
@@ -97,6 +130,13 @@ final class Equalizer: ObservableObject {
         } else {
             gains = Array(repeating: 0, count: EqualizerCore.bandCount)
         }
+        let presetID = UserDefaults.standard.string(forKey: "ac_eq_preset")
+        if let preset = presetID.flatMap(EqualizerCore.preset(id:)) {
+            gains = preset.gains
+            selectedPreset = presetID
+        } else {
+            selectedPreset = nil
+        }
     }
 
     // MARK: - Public API
@@ -104,6 +144,14 @@ final class Equalizer: ObservableObject {
     func setActive(_ on: Bool) {
         guard isActive != on else { return }
         isActive = on
+    }
+
+    /// Loads a named curve and marks it as the selected preset. The sliders are
+    /// still live afterwards; any manual move clears the selection.
+    func applyPreset(id: String) {
+        guard let preset = EqualizerCore.preset(id: id) else { return }
+        gains = preset.gains
+        selectedPreset = id
     }
 
     /// Sliders write through here (array slots cannot trigger @didSet on their own).
@@ -114,6 +162,7 @@ final class Equalizer: ObservableObject {
         var next = gains
         next[index] = clamped
         gains = next
+        selectedPreset = nil
     }
 
     /// A value binding for a single slider.
@@ -124,13 +173,16 @@ final class Equalizer: ObservableObject {
 
     func resetAll() {
         gains = Array(repeating: 0, count: EqualizerCore.bandCount)
+        selectedPreset = nil
     }
 
     /// Adds the EQ node between the engine's main mixer and its output node.
-    /// Returns nil when the EQ is off (nothing inserted) or the engine cannot
-    /// be rewired.
-    func install(on engine: AVAudioEngine) -> AVAudioUnitEQ? {
-        guard isActive else { return nil }
+    ///
+    /// The node is always inserted so that flipping the switch mid-track has an
+    /// immediate effect; on/off is `AVAudioUnitEQ.bypass`, applied live in
+    /// `apply(to:)` rather than by tearing the graph down.
+    @discardableResult
+    func install(on engine: AVAudioEngine) -> AVAudioUnitEQ {
         let eq = makeEQ()
         engine.attach(eq)
         let format = engine.mainMixerNode.outputFormat(forBus: 0)
@@ -154,6 +206,7 @@ final class Equalizer: ObservableObject {
     }
 
     private func apply(to eq: AVAudioUnitEQ) {
+        eq.bypass = !isActive
         eq.globalGain = 0
         for i in 0..<min(EqualizerCore.bandCount, eq.bands.count) {
             let band = eq.bands[i]
@@ -172,5 +225,6 @@ final class Equalizer: ObservableObject {
         UserDefaults.standard.set(isActive, forKey: "ac_eq_active")
         UserDefaults.standard.set(gains.map { String($0) }.joined(separator: ","),
                                   forKey: "ac_eq_gains")
+        UserDefaults.standard.set(selectedPreset, forKey: "ac_eq_preset")
     }
 }

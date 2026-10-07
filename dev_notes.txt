@@ -1297,3 +1297,6 @@ b33 — GOAL #17: 10-BAND EQ (Effects tab)  [DONE, built without verification]
   is audible, no startup clicks after the mainMixer disconnect/insert, slider
   moves apply to the currently playing track, and an Engine-B format (e.g. AC3)
   plays flat with no glitch. Crossfade ears test as noted in b33#14.
+
+# v0.6.5 (b34) in progress — #19 ReplayGain (b32/0.6.4 previous)
+2026-10-07 saved pre-power-down. STATE: EQ/spectrum/presets COMPLETE (unpushed). ReplayGain code COMPLETE, harness 24/24, app build run was aborted mid-way (one compile error fixed: headroom Float->Double); MUST rebuild + smoke test next session. Files: src/ReplayGain.swift (BS.1770-4 core: K-weight shelf+HP biquads, 400ms/75% blocks, 2-pass gating, -0.691 offset, 89 dB target, true peak), src/ReplayGainStore.swift (decoder AVAudioFile+PullDecoder, .replaygain sidecar JSON, volumeMultiplier with peak-headroom boost clamp, album=folder mean, mode enum), Player.swift (masterMixerVolume(): volume*mode multiplier, applyVolume, mode sink, crossfade promotion applyVolume, refreshVolume()), ContentView ReplayGainSection (mode chips, scan track/folder, readout, remove), localizations. Harness tools/test_replaygain/main.swift + build_tools.sh target. Known: album boost clamp uses trackPeak fallback; no AU path for Engine B/D (AVPlayer/AVMIDIPlayer stay flat, same as EQ).

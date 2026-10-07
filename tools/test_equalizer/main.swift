@@ -83,5 +83,33 @@ check("boost smaller one band away", atBandEdge > 1 && atBandEdge < boostCenter,
 let maxCut = EqualizerCore.responseAt(sampleRate: sr, center: c, q: 1, db: -60, frequency: c)
 checkNear("clamped cut peaks at -12 dB", maxCut, pow(10, -12.0 / 20), 0.01, "got \(maxCut)")
 
+// MARK: - Presets
+
+check("ten presets", EqualizerCore.presets.count == 10,
+      "count \(EqualizerCore.presets.count)")
+check("preset ids are unique and non-empty",
+      EqualizerCore.presets.map(\.id).allSatisfy { !$0.isEmpty }
+          && Set(EqualizerCore.presets.map(\.id)).count == EqualizerCore.presets.count)
+for preset in EqualizerCore.presets {
+    let gains = preset.gains
+    check("preset \(preset.id) has 10 gains",
+          gains.count == EqualizerCore.bandCount, "count \(gains.count)")
+    check("preset \(preset.id) gains in [-12, 12]",
+          gains.allSatisfy { $0.isFinite
+              && $0 >= EqualizerCore.minGain && $0 <= EqualizerCore.maxGain })
+    check("preset \(preset.id) lookup round-trips",
+          EqualizerCore.preset(id: preset.id)?.id == preset.id)
+}
+check("flat preset is all zeros",
+      EqualizerCore.preset(id: "flat")?.gains.allSatisfy { $0 == 0 } == true)
+check("unknown preset id is nil", EqualizerCore.preset(id: "bogus") == nil)
+// Boosting presets must stay gentle enough not to push the summed curve into
+// clipping: the loudest preset should leave headroom for the ±12 dB overdub.
+check("no preset requires > +6 dB on any single band",
+      EqualizerCore.presets.allSatisfy { p in p.gains.allSatisfy { $0 <= 6 } })
+check("some preset actually boosts and cuts",
+      EqualizerCore.presets.contains { p in p.gains.contains { $0 > 3 } }
+          && EqualizerCore.presets.contains { p in p.gains.contains { $0 < -2 } })
+
 print("--- \(checks) checks, \(failures) failures ---")
 exit(failures == 0 ? 0 : 1)

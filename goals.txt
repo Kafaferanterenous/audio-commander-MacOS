@@ -150,3 +150,12 @@ OTHER OPEN ITEMS:
   a hardware recorder — since those may use the "\x01FLAC" mapping header rather
   than the 0x7F "FLAC" form the vendored encoder writes. Queue an .ogg Vorbis
   track and an .oga track together and confirm both play.
+# v0.6.5 (b34) in progress — #19 ReplayGain
+- [~] #19 ReplayGain: core + store + gain fold-in + UI written; harness 24/24; APP BUILD NOT YET VERIFIED (rebase run aborted, power loss) — MUST rebuild + smoke test first
+- [x] EQ live-apply fix (always install AVAudioUnitEQ, bypass toggle)  [EQ WAS THE "couldn't tell the difference" bug]
+- [x] Spectrum idle text now disappears when bars appear (SpectrumSectionView observes analyzer)
+- [x] 10 EQ presets (Flat/Pop/Rock/Classical/Jazz/Electronic/Hip-Hop/Bass/Vocal/Treble) + chip picker + ac_eq_preset persistence, localized en/pl/it/zh
+- [x] test_equalizer 60/60, crossfade 34/34, spectrum 52, id3 46, replaygain 24/24
+- [ ] Not pushed to GitHub yet: EQ fixes, presets, spectrum fix, ReplayGain, README Gatekeeper note (uncommitted), n/a
+- [ ] ReplayGain check list: sidecar design UNCONFIRMED by user (chosen: .replaygain JSON per file, non-destructive), real-Mac loudness/gain ears test needed
+- [ ] Release v0.6.5/b34 after verification: bump Info.plist, rebuild universal, zip dist/ship/AudioCommander-0.6.5-macOS.zip, release on Kafaferanterenous/audio-commander-MacOS

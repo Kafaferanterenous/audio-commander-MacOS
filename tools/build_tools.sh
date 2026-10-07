@@ -64,4 +64,8 @@ xcrun swiftc -O -o "$OUT/test_crossfade$SUF" src/Crossfade.swift tools/test_cros
 # coefficient and response math under test are the shipping ones.
 xcrun swiftc -O -o "$OUT/test_equalizer$SUF" src/Equalizer.swift tools/test_equalizer/main.swift
 
-echo "--- tools built: $OUT (flacgen$SUF, test_oggflac$SUF, test_decoders$SUF, test_spectrum$SUF, test_id3$SUF, test_crossfade$SUF, test_equalizer$SUF) ---"
+# ReplayGain harness (#19): compiles the production src/ReplayGain.swift, so the
+# K-weighting, gating and loudness math under test are the shipping ones.
+xcrun swiftc -O -o "$OUT/test_replaygain$SUF" src/ReplayGain.swift tools/test_replaygain/main.swift
+
+echo "--- tools built: $OUT (flacgen$SUF, test_oggflac$SUF, test_decoders$SUF, test_spectrum$SUF, test_id3$SUF, test_crossfade$SUF, test_equalizer$SUF, test_replaygain$SUF) ---"

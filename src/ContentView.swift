@@ -944,11 +944,15 @@ struct InspectorDrawer: View {
 
                 Divider().overlay(settings.palette.divider)
 
-                spectrumSection
+                SpectrumSectionView(analyzer: store.spectrum)
 
                 Divider().overlay(settings.palette.divider)
 
                 EqualizerSection(equalizer: store.player.equalizer)
+
+                Divider().overlay(settings.palette.divider)
+
+                ReplayGainSection(store: store.player.replayGain, player: store.player)
 
                 Divider().overlay(settings.palette.divider)
                 Text(settings.t("effectsSoon"))
@@ -1014,34 +1018,106 @@ struct InspectorDrawer: View {
         }
     }
 
-    private var spectrumSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(settings.t("spectrumTitle"))
-                    .font(settings.scaled(13).weight(.medium))
-                Spacer()
-                if store.spectrum.hasSignal {
-                    Text(levelText)
-                        .font(settings.systemMono(10))
-                        .foregroundStyle(.secondary)
-                }
-            }
+    /// Spectrum visualizer along with its dB readout and decade axis (#16).
+    /// Owns an @ObservedObject on the analyzer so the overlay text is swapped for
+    /// bars the moment audio arrives — the parent store does not re-publish the
+    /// analyzer's 30 Hz steps.
+    private struct SpectrumSectionView: View {
+        @ObservedObject var analyzer: SpectrumAnalyzer
+        @EnvironmentObject private var settings: AppSettings
 
-            SpectrumBars(analyzer: store.spectrum,
-                         accent: settings.palette.accent,
-                         secondary: settings.palette.folderColor)
-                .frame(height: 120)
-                .overlay {
-                    if !store.spectrum.hasSignal {
-                        Text(settings.t("spectrumIdle"))
-                            .font(settings.scaled(11))
+        var body: some View {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(settings.t("spectrumTitle"))
+                        .font(settings.scaled(13).weight(.medium))
+                    Spacer()
+                    if analyzer.hasSignal {
+                        Text(levelText)
+                            .font(settings.systemMono(10))
                             .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 24)
                     }
                 }
 
-            spectrumAxis
+                SpectrumBars(analyzer: analyzer,
+                             accent: settings.palette.accent,
+                             secondary: settings.palette.folderColor)
+                    .frame(height: 120)
+                    .overlay {
+                        if !analyzer.hasSignal && !hasAnyBars {
+                            Text(settings.t("spectrumIdle"))
+                                .font(settings.scaled(11))
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 24)
+                        }
+                    }
+
+                spectrumAxis
+            }
+        }
+
+        /// Bars with any life left in them, even as they decay after the source
+        /// goes quiet, mean the overlay has nothing to say.
+        private var hasAnyBars: Bool {
+            analyzer.bars.contains { $0 > 0.02 }
+        }
+
+        private var levelText: String {
+            guard analyzer.hasSignal else { return settings.t("spectrumIdle") }
+            guard let db = analyzer.peakDecibels else { return "-inf dB" }
+            return String(format: "%+.1f dB", db)
+        }
+
+        /// Decade labels under the bars. Bands are log-spaced, so labelling the
+        /// powers of ten lines up almost exactly with the bar positions.
+        private var spectrumAxis: some View {
+            GeometryReader { geo in
+                let bands = analyzer.bars.count
+                ZStack(alignment: .topLeading) {
+                    ForEach(axisTicks, id: \.hz) { tick in
+                        if tick.index != nil, bands > 0 {
+                            let slot = geo.size.width / CGFloat(bands)
+                            Text(axisLabel(tick.hz))
+                                .font(settings.scaled(9))
+                                .foregroundStyle(.secondary)
+                                .fixedSize()
+                                .alignmentGuide(.leading) { dim in
+                                    // Centre each label on its bar, but keep the first
+                                    // one inside the axis instead of hanging it off
+                                    // the left edge.
+                                    let centre = CGFloat(tick.index!) * slot + slot / 2
+                                    return tick.index == 0 ? 2 : centre - dim.width / 2
+                                }
+                        }
+                    }
+                }
+                .frame(height: geo.size.height, alignment: .topLeading)
+            }
+            .frame(height: 12)
+        }
+
+        private struct AxisTick {
+            let hz: Double
+            /// Nil until the analyser has a device rate and can map bins to bands.
+            let index: Int?
+        }
+
+        private var axisTicks: [AxisTick] {
+            [100.0, 1_000.0, 10_000.0].map { AxisTick(hz: $0, index: bandIndex(for: $0)) }
+        }
+
+        /// First band whose centre frequency reaches `hz`.
+        private func bandIndex(for hz: Double) -> Int? {
+            for i in 0..<analyzer.bars.count {
+                guard let f = analyzer.bandFrequency(i) else { continue }
+                if f >= hz { return i }
+            }
+            return nil
+        }
+
+        private func axisLabel(_ hz: Double) -> String {
+            hz >= 1000 ? "\(Int(hz / 1000))k" : "\(Int(hz))"
         }
     }
 
@@ -1074,6 +1150,39 @@ struct InspectorDrawer: View {
                     .font(settings.scaled(10))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                Text(settings.t("eqPresets"))
+                    .font(settings.scaled(10).weight(.medium))
+                    .foregroundStyle(.secondary)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 4) {
+                        ForEach(EqualizerCore.presets, id: \.id) { preset in
+                            let selected = equalizer.selectedPreset == preset.id
+                            Button {
+                                equalizer.applyPreset(id: preset.id)
+                            } label: {
+                                Text(settings.t("eqPreset_" + preset.id))
+                                    .font(settings.scaled(10))
+                                    .lineLimit(1)
+                                    .padding(.vertical, 4)
+                                    .padding(.horizontal, 8)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 5)
+                                            .fill(selected ? settings.palette.accent.opacity(0.22)
+                                                           : settings.palette.cardOpacityFill))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 5)
+                                            .stroke(selected ? settings.palette.accent
+                                                             : settings.palette.divider,
+                                                    lineWidth: selected ? 1.5 : 1))
+                                    .foregroundStyle(selected ? settings.palette.accent
+                                                              : Color.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .disabled(!equalizer.isActive)
+                .opacity(equalizer.isActive ? 1 : 0.35)
                 ForEach(0..<EqualizerCore.bandCount, id: \.self) { i in
                     let enabled = equalizer.isActive
                     HStack(spacing: 8) {
@@ -1096,61 +1205,170 @@ struct InspectorDrawer: View {
         }
     }
 
-    private var levelText: String {
-        guard store.spectrum.hasSignal else { return settings.t("spectrumIdle") }
-        guard let db = store.spectrum.peakDecibels else { return "-inf dB" }
-        return String(format: "%+.1f dB", db)
-    }
+    /// ReplayGain section (#19). Owns an @ObservedObject on the store so the
+    /// mode chips, scanning progress and per-track readouts re-render as scans
+    /// finish; the player reference is only for the current-track readout and
+    /// for refreshing the applied volume after a scan.
+    private struct ReplayGainSection: View {
+        @ObservedObject var store: ReplayGainStore
+        @ObservedObject var player: PlayerState
+        @EnvironmentObject private var settings: AppSettings
 
-    /// Decade labels under the bars. Bands are log-spaced, so labelling the
-    /// powers of ten lines up almost exactly with the bar positions.
-    private var spectrumAxis: some View {
-        GeometryReader { geo in
-            let bands = store.spectrum.bars.count
-            ZStack(alignment: .topLeading) {
-                ForEach(axisTicks, id: \.hz) { tick in
-                    if tick.index != nil, bands > 0 {
-                        let slot = geo.size.width / CGFloat(bands)
-                        Text(axisLabel(tick.hz))
-                            .font(settings.scaled(9))
+        var body: some View {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(settings.t("rgTitle"))
+                        .font(settings.scaled(13).weight(.medium))
+                    Spacer()
+                    if let entry = currentEntry() {
+                        Text(String(format: "%+.1f dB", effectiveGain(entry)))
+                            .font(settings.systemMono(10))
                             .foregroundStyle(.secondary)
-                            .fixedSize()
-                            .alignmentGuide(.leading) { dim in
-                                // Centre each label on its bar, but keep the first
-                                // one inside the axis instead of hanging it off
-                                // the left edge.
-                                let centre = CGFloat(tick.index!) * slot + slot / 2
-                                return tick.index == 0 ? 2 : centre - dim.width / 2
-                            }
+                    }
+                }
+                Text(settings.t("rgHint"))
+                    .font(settings.scaled(10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                rgModeRow
+
+                if let track = player.currentTrack {
+                    if store.isScanning {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text(settings.t("rgScanning"))
+                                .font(settings.scaled(10))
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        readoutRow(for: track)
+                    }
+                } else {
+                    Text(settings.t("rgNoTrack"))
+                        .font(settings.scaled(10))
+                        .foregroundStyle(.secondary)
+                }
+
+                if let status = store.status {
+                    Text(status)
+                        .font(settings.scaled(10))
+                        .foregroundStyle(settings.palette.accent)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+
+        private var rgModeRow: some View {
+            HStack(spacing: 4) {
+                ForEach(ReplayGainMode.allCases, id: \.self) { mode in
+                    let selected = store.mode == mode
+                    Button {
+                        store.mode = mode
+                    } label: {
+                        Text(settings.t(mode.titleKey))
+                            .font(settings.scaled(11))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 5)
+                            .background(
+                                RoundedRectangle(cornerRadius: 5)
+                                    .fill(selected ? settings.palette.accent.opacity(0.22)
+                                                   : settings.palette.cardOpacityFill))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 5)
+                                    .stroke(selected ? settings.palette.accent
+                                                     : settings.palette.divider,
+                                            lineWidth: selected ? 1.5 : 1))
+                            .foregroundStyle(selected ? settings.palette.accent
+                                                      : Color.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+
+        private func readoutRow(for track: FileItem) -> some View {
+            VStack(alignment: .leading, spacing: 6) {
+                if let entry = store.entry(for: track.url) {
+                    Text(settings.tf("rgReadout",
+                                     track.name,
+                                     String(format: "%+.1f", effectiveGain(entry)),
+                                     String(format: "%+.1f", entry.trackGain),
+                                     entry.albumGain.map { String(format: "%+.1f", $0) } ?? "—",
+                                     entry.trackLoudnessLUFS.map { String(format: "%.1f", $0) }
+                                         ?? "—"))
+                        .font(settings.systemMono(10))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 10) {
+                        Button(settings.t("rgScanFolder")) { scanFolder(track) }
+                            .buttonStyle(.plain)
+                            .font(settings.scaled(10))
+                            .foregroundStyle(settings.palette.accent)
+                        Button(settings.t("rgRemove")) { remove(track) }
+                            .buttonStyle(.plain)
+                            .font(settings.scaled(10))
+                            .foregroundStyle(settings.palette.accent)
+                    }
+                } else {
+                    Text(settings.t("rgNotAnalysed"))
+                        .font(settings.scaled(10))
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 10) {
+                        Button(settings.t("rgScanTrack")) { scanTrack(track) }
+                            .buttonStyle(.plain)
+                            .font(settings.scaled(10))
+                            .foregroundStyle(settings.palette.accent)
+                        Button(settings.t("rgScanFolder")) { scanFolder(track) }
+                            .buttonStyle(.plain)
+                            .font(settings.scaled(10))
+                            .foregroundStyle(settings.palette.accent)
                     }
                 }
             }
-            .frame(height: geo.size.height, alignment: .topLeading)
         }
-        .frame(height: 12)
-    }
 
-    private struct AxisTick {
-        let hz: Double
-        /// Nil until the analyser has a device rate and can map bins to bands.
-        let index: Int?
-    }
-
-    private var axisTicks: [AxisTick] {
-        [100.0, 1_000.0, 10_000.0].map { AxisTick(hz: $0, index: bandIndex(for: $0)) }
-    }
-
-    /// First band whose centre frequency reaches `hz`.
-    private func bandIndex(for hz: Double) -> Int? {
-        for i in 0..<store.spectrum.bars.count {
-            guard let f = store.spectrum.bandFrequency(i) else { continue }
-            if f >= hz { return i }
+        private func currentEntry() -> ReplayGainEntry? {
+            guard let track = player.currentTrack else { return nil }
+            return store.entry(for: track.url)
         }
-        return nil
-    }
 
-    private func axisLabel(_ hz: Double) -> String {
-        hz >= 1000 ? "\(Int(hz / 1000))k" : "\(Int(hz))"
+        private func effectiveGain(_ entry: ReplayGainEntry) -> Double {
+            switch store.mode {
+            case .off: return 0
+            case .track: return entry.trackGain
+            case .album: return entry.albumGain ?? 0
+            }
+        }
+
+        private func scanTrack(_ track: FileItem) {
+            Task {
+                store.status = settings.t("rgScanning")
+                let entry = await store.scan(track: track.url)
+                store.status = entry != nil
+                    ? settings.tf("rgDoneTrack", track.name)
+                    : settings.t("rgFailed")
+                player.refreshVolume()
+            }
+        }
+
+        private func scanFolder(_ track: FileItem) {
+            Task {
+                store.status = ""
+                let count = await store.scan(folder: track.url.deletingLastPathComponent())
+                if count > 0 {
+                    store.status = settings.tf("rgDoneFolder", count)
+                } else {
+                    store.status = settings.t("rgFailed")
+                }
+                player.refreshVolume()
+            }
+        }
+
+        private func remove(_ track: FileItem) {
+            store.clear(track: track.url)
+            store.status = settings.t("rgRemoved")
+            player.refreshVolume()
+        }
     }
 
     private func importPlaylist() {
