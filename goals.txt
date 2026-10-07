@@ -1,6 +1,6 @@
 AudioCommander — Goal Backlog (merged formats + features)
-Created 2026-09-23. Status as of build 31, RELEASED as v0.6.3 on 2026-10-01
-(previous release v0.6.2 = build 27). 14/25 goals complete (56%).
+Created 2026-09-23. Status as of build 33 (v0.6.3 released 2026-10-01;
+b32 = #21 built but unreleased, b33 = #14 + #17 added). 18/25 goals complete (72%).
 (F) = format playback, (X) = app feature. Effort: lowest = easiest.
 
 DONE (b18..b22, shipped in v0.6.1):
@@ -19,19 +19,19 @@ DONE (b23..b29, built, awaiting user verification/release):
  12. (X) Drag & drop          45%   Finder -> pane copies in + refreshes
  13. (X) Mini player          45%   floating panel OUTSIDE the drawer (b29)
  15. (F) Ogg FLAC             55%   libFLAC + Ogg container (b30)
- 16. (X) Spectrum visualizer  55%   drawer tab (Effects), b31
+16. (X) Spectrum visualizer  55%   drawer tab (Effects), b31
+  21. (X) MP3 ID3 meta editor  65%   pure-Swift ID3v2 in the flyout, b32
+  14. (X) Gapless/crossfade    50%   engine scheduling, b33
+  17. (X) 10-band EQ           55%   drawer tab (Effects), b33
 
 REMAINING (priority order):
- 14. (X) Gapless/crossfade    50%   engine scheduling
- 17. (X) 10-band EQ           55%   drawer tab (Effects)
-18. (F) DSD DSF/DFF          60%   DSD->PCM decimation needed
-19. (X) ReplayGain           60%   scan + apply gain (drawer tab)
-20. (F) DTS                  65%   no small standalone decoder
-21. (X) MP3 ID3 meta editor  65%   drawer tab (TagLib or ID3v2 writer)
-22. (F) APE                  70%   MAC library, streaming awkward
-23. (X) MIDI instrument/bank 75%   AVMIDIPlayer no bank API; sampler risky
- 24. (F) WMA                  85%   FFmpeg-only decoder
- 25. (F) WMAPro               90%   even heavier
+  18. (F) DSD DSF/DFF          60%   DSD->PCM decimation needed
+  19. (X) ReplayGain           60%   scan + apply gain (drawer tab)
+  20. (F) DTS                  65%   no small standalone decoder
+  22. (F) APE                  70%   MAC library, streaming awkward
+  23. (X) MIDI instrument/bank 75%   AVMIDIPlayer no bank API; sampler risky
+  24. (F) WMA                  85%   FFmpeg-only decoder
+  25. (F) WMAPro               90%   even heavier
 
 DONE detail for #15 (b30): vendored libFLAC + libogg (both BSD/Xiph, matches the
 project's permissive-only policy) under vendored/flac + vendored/ogg. New
@@ -58,9 +58,46 @@ scaling, ring wrap, stereo downmix). Found and fixed 3 real bugs: Float->Double
 ring read after wrap, unnormalized magnitudes, and a -6 dBFS ceiling that
 clipped ordinary material.
 
-WIP (not counted in the 14/25): real-Mac playback verification for b28..b31
-(0.6.3). b23..b27 shipped in v0.6.2 and were never confirmed on real hardware
-either.
+DONE detail for #21 (b32): metadata editor in the flyout's Utilities tab. Pure-Swift
+ID3v2 reader/writer (src/AudioTags.swift, zero deps) reads v2.2/v2.3/v2.4 with
+unsync, extended headers and APIC art, and writes v2.3 preserving every unmanaged
+frame; src/TagEditor.swift renders the fields. Only ID3 containers (mp3/mp2/mp1/mpa)
+are editable. tools/test_id3/main.swift compiles the shipping source and passes
+46/46; the writer was independently cross-checked against a hand-written Python
+ID3 parser on a real lame-encoded MP3.
+
+DONE detail for #14 (b33): gapless + crossfade in the flyout's Effects tab.
+A second confirm-on cadence AVAudioEngine is pre-started just before the
+outgoing track ends (native format path only), so a transition needs no
+teardown gap. Options: Off (the proven stop-then-start path, default), Gapless
+(0.08 s overlap, incoming starts at full volume) and true crossfades of 2/4/6/8 s
+(piecewise-linear node-volume ramps at 20 ms). src/Crossfade.swift holds the
+option mapping and fade math as pure code; tools/test_crossfade/main.swift
+compiles the shipping source and passes 34/34. Repeat-one, the last track with
+repeat off, and the shuffled repeat-all wrap are deliberately left to the normal
+end-of-track path (the wrap re-permutes the queue). Pause, seek and stop cancel
+an in-flight transition.
+
+DONE detail for #17 (b33): 10-band EQ in the Effects tab. The DSP is a single
+AVAudioUnitEQ inserted between each in-app engine's main mixer and its output
+node (native AVAudioFile, embedded AVAudioSourceNode, and MIDI sequencer paths),
+so every track through those engines passes through the same live-adjustable
+filters. The AVPlayer fallback and AVMIDIPlayer paths cannot host an AU insert
+and stay flat (documented in the UI hint). Bands are the classic ten-slopers
+31 Hz..16 kHz, 1 octave apart, Q 1.0, ±12 dB; gains/state persist (ac_eq_active,
+ac_eq_gains). src/Equalizer.swift pairs the Equalizer state object with a
+testable EqualizerCore: RBJ peaking-biquad coefficients + a unit-circle
+frequency response. tools/test_equalizer/main.swift compiles the shipping source
+and passes 24/24 (band table, clamping, guard rails, 0 dB identity across the
+range, boost peaks at the target gain and returns to unity far away, cut is the
+exact reciprocal of boost, clamped -12 dB floor, band 1 octave away is smaller).
+
+WIP (not counted above): real-Mac playback verification for b28..b31 (0.6.3),
+the b32 ID3 editor, and both b33 features (crossfade pacing and the EQ's
+audible shape/level need ears — neither can be verified on this VM; an
+AVAudioUnitEQ insert between mixer and output should also be confirmed not to
+glitch on engine start/teardown on real hardware). b23..b27 shipped in v0.6.2
+and were never confirmed on real hardware either.
 
 ARCHIVED — LICENSING UNCLEAR (removed from active goals 2026-09-28; do not
 pursue without a clean, redistributable licence that fits the project policy of

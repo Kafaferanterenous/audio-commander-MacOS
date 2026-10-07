@@ -162,8 +162,19 @@ final class CommanderStore: ObservableObject {
     let spectrum = SpectrumAnalyzer.shared
     let transfer = TransferManager()
     let playlists = PlaylistStore.shared
+    /// #21 metadata editor state. Kept on the store so in-progress edits survive
+    /// switching drawer tabs.
+    let tagEditor = TagEditorModel()
 
     var activePane: PaneState { activeSide == "right" ? right : left }
+
+    /// The file the metadata editor shows: the single selection in the active
+    /// pane if there is exactly one, otherwise the track that is playing.
+    var tagTarget: FileItem? {
+        let selected = activePane.selectedItems
+        if selected.count == 1 { return selected[0] }
+        return player.currentTrack
+    }
 
     private init() {
         let home = URL(fileURLWithPath: NSHomeDirectory())
@@ -525,7 +536,8 @@ struct InspectorDrawer: View {
             }
         }
         .frame(width: 360)
-        .background(.ultraThinMaterial)
+        .background(LinearGradient(colors: [settings.palette.bgTop, settings.palette.bgBottom],
+                                   startPoint: .top, endPoint: .bottom))
         .overlay(alignment: .leading) {
             Rectangle().fill(settings.palette.divider).frame(width: 1)
         }
@@ -846,28 +858,28 @@ struct InspectorDrawer: View {
     // MARK: Utilities
 
     private var utilitiesTab: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(settings.t("sleepTimerLabel"))
-                    .font(settings.scaled(13))
-                // Split over two rows. Five segments in a 320pt flyout left each
-                // label too narrow to read, and a segmented control cannot wrap
-                // itself, so the choices are laid out as a grid of buttons that
-                // look and behave like one.
-                VStack(spacing: 4) {
-                    sleepTimerRow(SleepTimerOptions.allCases.prefix(3))
-                    sleepTimerRow(SleepTimerOptions.allCases.dropFirst(3))
+        // The metadata editor makes this tab taller than the flyout, so the
+        // whole tab scrolls as one column.
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(settings.t("sleepTimerLabel"))
+                        .font(settings.scaled(13))
+                    // Split over two rows. Five segments in a 320pt flyout left
+                    // each label too narrow to read, and a segmented control
+                    // cannot wrap itself, so the choices are laid out as a grid
+                    // of buttons that look and behave like one.
+                    VStack(spacing: 4) {
+                        sleepTimerRow(SleepTimerOptions.allCases.prefix(3))
+                        sleepTimerRow(SleepTimerOptions.allCases.dropFirst(3))
+                    }
                 }
+                Divider().overlay(settings.palette.divider)
+                TagEditorPanel(store: store, model: store.tagEditor)
             }
-            Divider().overlay(settings.palette.divider)
-            Text(settings.t("utilitiesSoon"))
-                .font(settings.scaled(11))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer()
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .top)
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     // MARK: Settings tab
@@ -926,6 +938,83 @@ struct InspectorDrawer: View {
     /// timer are switched off, so a player who never opens the drawer pays
     /// nothing for it.
     private var effectsTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                crossfadeSection
+
+                Divider().overlay(settings.palette.divider)
+
+                spectrumSection
+
+                Divider().overlay(settings.palette.divider)
+
+                EqualizerSection(equalizer: store.player.equalizer)
+
+                Divider().overlay(settings.palette.divider)
+                Text(settings.t("effectsSoon"))
+                    .font(settings.scaled(11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .top)
+        }
+        .onAppear { store.spectrum.setActive(true) }
+        .onDisappear { store.spectrum.setActive(false) }
+    }
+
+    /// Crossfade / gapless control (#14). A second engine is started just
+    /// before the outgoing track ends; the choice below sets how long the two
+    /// overlap. "Off" keeps the classic stop-then-start behaviour.
+    private var crossfadeSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(settings.t("xfTitle"))
+                    .font(settings.scaled(13).weight(.medium))
+                Spacer()
+                Text(settings.t(store.player.crossfade.titleKey))
+                    .font(settings.systemMono(10))
+                    .foregroundStyle(.secondary)
+            }
+            Text(settings.t("xfHint"))
+                .font(settings.scaled(10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            crossfadeRow(CrossfadeOption.allCases.prefix(3))
+            crossfadeRow(CrossfadeOption.allCases.dropFirst(3))
+        }
+    }
+
+    private func crossfadeRow(_ options: ArraySlice<CrossfadeOption>) -> some View {
+        HStack(spacing: 4) {
+            ForEach(Array(options)) { opt in
+                let selected = store.player.crossfade == opt
+                Button {
+                    store.player.crossfade = opt
+                } label: {
+                    Text(settings.t(opt.titleKey))
+                        .font(settings.scaled(11))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 5)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5)
+                                .fill(selected ? settings.palette.accent.opacity(0.22)
+                                               : settings.palette.cardOpacityFill))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5)
+                                .stroke(selected ? settings.palette.accent
+                                                 : settings.palette.divider,
+                                        lineWidth: selected ? 1.5 : 1))
+                        .foregroundStyle(selected ? settings.palette.accent : Color.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var spectrumSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text(settings.t("spectrumTitle"))
@@ -953,18 +1042,58 @@ struct InspectorDrawer: View {
                 }
 
             spectrumAxis
-
-            Divider().overlay(settings.palette.divider)
-            Text(settings.t("effectsSoon"))
-                .font(settings.scaled(11))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .onAppear { store.spectrum.setActive(true) }
-        .onDisappear { store.spectrum.setActive(false) }
+    }
+
+    /// Ten-slopers (#17). An @ObservedObject of its own so SwiftUI re-renders on
+    /// Equalizer.objectWillChange (the fields live on Equalizer, not the store).
+    private struct EqualizerSection: View {
+        @ObservedObject var equalizer: Equalizer
+        @EnvironmentObject private var settings: AppSettings
+
+        private static let bandLabels = ["31", "62", "125", "250", "500",
+                                         "1k", "2k", "4k", "8k", "16k"]
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(settings.t("eqTitle"))
+                        .font(settings.scaled(13).weight(.medium))
+                    Spacer()
+                    Button(settings.t("eqReset")) { equalizer.resetAll() }
+                        .buttonStyle(.plain)
+                        .font(settings.scaled(10))
+                        .foregroundStyle(settings.palette.accent)
+                    Toggle("", isOn: Binding(get: { equalizer.isActive },
+                                             set: { equalizer.setActive($0) }))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+                Text(settings.t("eqHint"))
+                    .font(settings.scaled(10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                ForEach(0..<EqualizerCore.bandCount, id: \.self) { i in
+                    let enabled = equalizer.isActive
+                    HStack(spacing: 8) {
+                        Text(Self.bandLabels[i])
+                            .font(settings.systemMono(9))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 30, alignment: .trailing)
+                        Slider(value: equalizer.bindingFor(index: i),
+                               in: EqualizerCore.minGain...EqualizerCore.maxGain)
+                            .tint(settings.palette.accent)
+                            .disabled(!enabled)
+                            .opacity(enabled ? 1 : 0.35)
+                        Text(String(format: "%+.0f", equalizer.gains[i]))
+                            .font(settings.systemMono(9))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 32, alignment: .trailing)
+                    }
+                }
+            }
+        }
     }
 
     private var levelText: String {

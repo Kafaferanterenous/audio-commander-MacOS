@@ -1154,3 +1154,146 @@ Verified after each step: build.sh clean and universal (6.0 MB), app launches an
 exits cleanly, test_spectrum 52/52, test_oggflac 652/0, test_decoders ALL PASS.
 These changes are NOT committed and NOT released. goals.txt stays at 14/25 (56%)
 because no backlog goal was completed — this is UI polish outside the list.
+
+================================================================
+b32 — GOAL #21: MP3 ID3 META EDITOR (flyout drawer)  [DONE, built + verified]
+================================================================
+- USER DIRECTIVE: put the ID3 tag details in the flyout panel. They live in the
+  drawer's Utilities tab (the tab the code already reserved for the metadata
+  editor), not a modal and not a new fifth tab — a fifth segment would not fit
+  the 360pt drawer the four-tab picker already fills.
+- NEW src/AudioTags.swift — pure-Swift ID3v2 reader/writer, zero dependencies,
+  matching the project convention of hand-rolled parsers (smfDuration, .m3u):
+  * READS v2.2 / v2.3 / v2.4. Handles unsynchronisation (header-level and the
+    v2.4 per-frame flag), extended headers (both revisions), the v2.4 synchsafe
+    frame size, grouping/data-length-indicator bytes, and skips
+    compressed/encrypted frames. v2.2 3-char IDs map to their v2.3 names.
+  * Text decoded per encoding byte: ISO-8859-1 / UTF-16 (BOM or BOM-less) /
+    UTF-8, multi-value frames split on NUL. COMM language + description
+    stripped. Old "(17)Rock" genre references become "Rock". v2.4 TDRC
+    timestamps reduce to a year.
+  * Album art (APIC / v2.2 PIC) is extracted for display.
+  * WRITES v2.3 (the most compatible revision for old-device collections).
+    Every frame the editor does NOT manage (APIC, TXXX, USLT, TCOM, ...) is
+    carried through byte-for-byte — a rewrite cannot silently drop album art or
+    unknown tags. Empty fields delete their frame rather than storing blank.
+  * Text bodies use ISO-8859-1 when the value fits (maximally compatible) and
+    UTF-16-with-BOM otherwise.
+  * Reads only the leading tag from disk (FileHandle), so opening a 30 MB MP3
+    does not read 30 MB. Writes through a sibling temp file + atomic replace,
+    so an interrupted save cannot truncate the original; the trailing 128-byte
+    ID3v1 block, if present, is left intact.
+- NEW src/TagEditor.swift — TagEditorModel (MainActor ObservableObject, one
+  instance kept on CommanderStore so edits survive switching drawer tabs) plus
+  TagEditorPanel (editable fields Title/Artist/Album/Track/Year/Genre/Comment,
+  art thumbnail, Save/Reload, dirty-state badge, saved/failed status). Save is
+  disabled until something changes.
+- TARGETING: the editor shows the single selected file in the active pane, or
+  falls back to the track that is playing. Only ID3 containers
+  (mp3/mp2/mp1/mpa) are editable — FLAC/MP4/Ogg must not receive an ID3 tag, so
+  they show a "use their own tag systems" note instead.
+- Localized in all four languages (en/pl/it/zh); removed the now-served
+  "utilitiesSoon" placeholder string.
+- VERIFIED — tools/test_id3/main.swift compiles the PRODUCTION src/AudioTags.swift
+  and passes 46/46: build->parse round-trip (ASCII + UTF-16 + UTF-8), encoding
+  byte selection, v2.2/v2.3/v2.4 reads, BOM-less UTF-16, header- and frame-level
+  unsync, v2.3 extended header, genre index + TDRC year, APIC extraction, TXXX
+  and APIC preservation across a rewrite, tag length/stripping, and file
+  write/read with a trailing ID3v1 kept. First run had 2 failures; BOTH were bad
+  fixtures of mine (an unsync payload that was not valid UTF-8, and a v2.3
+  extended header whose size field did not match its body) — the parser was
+  right both times.
+- INDEPENDENT CROSS-CHECK: a real 128 kbps MP3 (lame) tagged by the shipping
+  writer, then parsed by a separate hand-written Python ID3 parser — ID3 v2.3,
+  size 150, all seven frames decoded correctly, audio MPEG sync (FF FB) begins
+  exactly at the end of the tag. The macOS Spotlight importer is not available
+  on this VM (mdls returns null for every key, indexing off), so it could not be
+  used as the second opinion.
+- BUILD: ./build.sh clean, universal (x86_64 + arm64), ad-hoc signed, 6.4 MB;
+  app launches, stays alive, exits cleanly. Other harnesses untouched.
+- Info.plist 31 -> 32 (version stays 0.6.3; no release cut). goals.txt 15/25
+  (60%). NOT committed, NOT released.
+- REAL-MAC CHECK NEEDED: open the flyout, select one MP3 (or play one), Utilities
+  tab -> edit title/artist/album/etc and Save; confirm the values persist after a
+  Rescan/relaunch and that album art still shows. Confirm a FLAC/M4A shows the
+  "not editable" note. (The app's own transport reads file names, not ID3, so
+  use the editor reload or a rescan to confirm.)
+b33 — GOAL #14: GAPLESS / CROSSFADE (Effects tab)  [DONE, built + verified]
+- Design: a second AVAudioEngine (native Engine-A path only) is pre-started
+  when the outgoing track reaches `duration - crossfadeSeconds`. The incoming
+  node plays into the same output, so the transition never tears the audio
+  down; when the outgoing node finishes, its engine alone is replaced and the
+  incoming engine is promoted to the live one. Because only the outgoing side
+  is torn down, there is no silence between tracks.
+- Options (new CrossfadeOption, persisted as ac_crossfade, default Off):
+    Off      = the proven stop-then-start path, completely unchanged
+    Gapless  = 0.08 s overlap, incoming starts at full volume (no fade-in dip)
+    2/4/6/8 s = real crossfades, piecewise-linear node-volume ramps at 20 ms
+- New src/Crossfade.swift: option table + pure fade math (fadeIn/fadeOut/
+  shouldTransition), no audio-framework dependencies. Used by both the app and
+  the harness, so the tested numbers are the shipping ones.
+- PlayerState changes: crossfade @Published (didSet persists + cancels an
+  in-flight transition when turned off); xfEngine/xfNode/xfFile/xfIndex/
+  xfTimer/isTransitioning. beginCrossfade() spawns the second engine;
+  startCrossfadeRamp()->rampCrossfade() drives the 20 ms volume ramp;
+  finishCrossfade() promotes the incoming engine and updates queueIndex/
+  currentTrack/currentTime (= overlap age, not 0!)/duration; cancelCrossfade()
+  restores volume and stops the spare engine. Hooks: ticked() (.avaudio arm,
+  start trigger + end-dispatch to finishCrossfade), togglePause (pause cancels),
+  seek (seek cancels), applyVolume (spare engine follows the master volume),
+  teardownPlayback (cancels).
+- Deliberately NOT crossfaded: repeat-one (re-peats the same file), last track
+  with repeat off (stops), and the shuffled repeat-all wrap (its reshuffle
+  re-permutes the queue and would invalidate a preloaded target). Non-native
+  incoming tracks fall back to the classic path automatically.
+- Effects tab now a ScrollView: crossfade section (3+3 segmented buttons,
+  localized en/pl/it/zh) + spectrum section + EQ/ReplayGain placeholder.
+- Test harness: tools/test_crossfade/main.swift compiles src/Crossfade.swift;
+  34/34 pass (option overlap table, trigger window boundaries incl. the
+  duration<=0 and overlap==0 guards, fade endpoints/clamping, mid- and
+  late-fade unity sum, title-key uniqueness).
+- BUILD: ./build.sh clean, universal (x86_64 + arm64), ad-hoc signed, 6.6 MB;
+  app launches, stays alive, exits cleanly. All harnesses green: test_spectrum
+  52/52, test_oggflac 652/0, test_decoders ALL PASS, test_id3 46/46,
+  test_crossfade 34/34. goals.txt 16/25 (64%). NOT committed, NOT released.
+- REAL-MAC CHECK NEEDED: pick several MP3s (same format to hit Engine A) with
+  crossfade 4 s and confirm the outgoing track weaves out while the next weaves
+  in with no click/dropout; Gapless should feel seamless (no silence, no
+  double-start); Off must behave exactly as before. Also check a mixed queue
+  (MP3 -> Ogg) falls back cleanly. A fade pacing bug is inaudible on this VM.
+b33 — GOAL #17: 10-BAND EQ (Effects tab)  [DONE, built without verification]
+- DSP: one AVAudioUnitEQ inserted between each in-app engine's main mixer and
+  its output node: Engine A (native AVAudioFile), Engine C (embedded
+  AVAudioSourceNode), Engine E (MIDI AVAudioSequencer->sampler). Pattern:
+  engine.disconnectNodeOutput(mainMixer) then mainMixer -> eq -> outputNode.
+  Live-adjustable: Equalizer.refreshLive() re-applies gains to every installed
+  node, so sliders move a playing track immediately and persist (ac_eq_active,
+  ac_eq_gains). The spectrum tap still lands on mainMixer (pre-EQ) — unchanged.
+- New src/Equalizer.swift: `Equalizer` (@MainActor, singleton .shared, mirrors
+  the SpectrumAnalyzer pattern — PlayerState owns the insert, the Effects tab
+  reads/edits the same object) + `EqualizerCore` pure maths: RBJ peaking-biquad
+  coefficients and a unit-circle magnitude response, clamped ±12 dB.
+- The only true failure during harness bring-up was in MY response maths: the
+  first expansion of |H(e^jw)| used a bogus norm4/norm2 substitute for the
+  cos/sin terms and produced a broadband 12 dB shelf instead of a 1 kHz peak;
+  the shipping response now evaluates H on the unit circle with plain
+  cos(2w)/sin(2w) — and that also shows the RBJ coefficients embed the full
+  linear gain, so no extra `10^(db/20)` multiply (that over-boosted the peak to
+  10^(db/10) = a^2). Both mistakes fixed; harness pins the curve.
+- Effects tab now: Crossfade -> Spectrum -> Equalizer (10 sliders, band labels
+  31..16k, %+.0f dB reads, Master on/off switch, Reset). Localized en/pl/it/zh.
+- Harness: tools/test_equalizer/main.swift compiles src/Equalizer.swift;
+  24/24 (band table, clamp rails, nil guards, 0 dB identity across the range,
+  boost peaks at ~10^(db/20) and returns to unity far away, boost x cut == 1 at
+  center, clamped -12 dB floor, one-octave-away band is weaker).
+- Limits: AVPlayer fallback (Engine B) and AVMIDIPlayer (Engine D) cannot host
+  an AU insert — those stay flat; the UI hint says so. A live EQ-inserted
+  engine's perception is assumed to match the tested AES-ish curves.
+- BUILD: ./build.sh clean, universal (x86_64 + arm64), ad-hoc signed, 6.7 MB;
+  app launches, stays alive, exits cleanly. All harnesses green: spectrum 52/52,
+  oggflac 652/0, decoders ALL PASS, id3 46/46, crossfade 34/34, equalizer 24/24.
+  goals.txt 18/25 (72%). NOT committed, NOT released.
+- REAL-MAC CHECK NEEDED: enable EQ + sliders and confirm a 1 kHz / 10 kHz boost
+  is audible, no startup clicks after the mainMixer disconnect/insert, slider
+  moves apply to the currently playing track, and an Engine-B format (e.g. AC3)
+  plays flat with no glitch. Crossfade ears test as noted in b33#14.

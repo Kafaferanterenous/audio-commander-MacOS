@@ -52,4 +52,16 @@ xcrun cc $CFLAGS tools/test_decoders.c -o "$OUT/test_decoders$SUF" "$LIB" -lm
 # code rather than a copy. Needs a main.swift (top-level code) and AVFoundation.
 xcrun swiftc -O -o "$OUT/test_spectrum$SUF" src/Spectrum.swift tools/test_spectrum/main.swift
 
-echo "--- tools built: $OUT (flacgen$SUF, test_oggflac$SUF, test_decoders$SUF, test_spectrum$SUF) ---"
+# ID3 harness (#21): compiles the production src/AudioTags.swift, so the parser
+# and writer under test are the shipping ones. Foundation only.
+xcrun swiftc -O -o "$OUT/test_id3$SUF" src/AudioTags.swift tools/test_id3/main.swift
+
+# Crossfade harness (#14): compiles the production src/Crossfade.swift, so the
+# option mapping and fade math under test are the shipping ones.
+xcrun swiftc -O -o "$OUT/test_crossfade$SUF" src/Crossfade.swift tools/test_crossfade/main.swift
+
+# Equalizer harness (#17): compiles the production src/Equalizer.swift, so the
+# coefficient and response math under test are the shipping ones.
+xcrun swiftc -O -o "$OUT/test_equalizer$SUF" src/Equalizer.swift tools/test_equalizer/main.swift
+
+echo "--- tools built: $OUT (flacgen$SUF, test_oggflac$SUF, test_decoders$SUF, test_spectrum$SUF, test_id3$SUF, test_crossfade$SUF, test_equalizer$SUF) ---"

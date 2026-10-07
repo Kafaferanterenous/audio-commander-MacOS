@@ -247,8 +247,13 @@ final class AppSettings: ObservableObject {
                 "Play something to see the spectrum. This source does not feed the analyser.",
             "effectsSoon":
                 "Equalizer and ReplayGain are planned for the Effects tab (#17, #19).",
-            "utilitiesSoon":
-                "The sleep timer lives here. The metadata editor arrives with #21.",
+            "xfTitle": "Crossfade",
+            "xfHint": "Overlaps the end of one track with the start of the next. Gapless uses a very short overlap. Native formats only.",
+            "xfOff": "Off", "xfGapless": "Gapless",
+            "xfTwo": "2 s", "xfFour": "4 s", "xfSix": "6 s", "xfEight": "8 s",
+            "eqTitle": "Equalizer",
+            "eqHint": "Ten bands inserted into the in-app engines (native, embedded, MIDI). The AVPlayer fallback path stays flat.",
+            "eqReset": "Reset",
             "copyToOther": "Copy selection to the other pane",
             "moveToOther": "Move selection to the other pane",
             "selectFirst": "Select items with the circle checkboxes first",
@@ -282,7 +287,18 @@ final class AppSettings: ObservableObject {
             "sleepMinutesShort": "%d min",
             "miniPlayer": "Mini player",
             "miniIdle": "Nothing playing",
-            "miniShowMain": "Show the main window"
+            "miniShowMain": "Show the main window",
+            "metadataTitle": "Metadata (ID3)",
+            "tagTitleLabel": "Title", "tagArtistLabel": "Artist",
+            "tagAlbumLabel": "Album", "tagTrackLabel": "Track",
+            "tagYearLabel": "Year", "tagGenreLabel": "Genre",
+            "tagCommentLabel": "Comment",
+            "tagSave": "Save tags", "tagReload": "Reload",
+            "tagsSaved": "Tags saved", "tagsSaveFailed": "Could not save tags",
+            "tagsUnsaved": "Unsaved changes",
+            "tagsFormatNote": "ID3v2 tag — written into the file",
+            "tagsMp3Only": "Tag editing is available for MP3 (ID3) files. Other formats use their own tag systems.",
+            "tagsNoSelection": "Select one audio file, or play a track, to see its tags."
         ],
         .polish: [
             "left": "Lewy", "right": "Prawy",
@@ -329,8 +345,13 @@ final class AppSettings: ObservableObject {
                 "Odtwórz coś, aby zobaczyć widmo. To źródło nie zasila analizatora.",
             "effectsSoon":
                 "Korektor i ReplayGain pojawią się w zakładce Efekty (#17, #19).",
-            "utilitiesSoon":
-                "Tu znajduje się licznik usypiania. Edytor metadanych pojawi się w #21.",
+            "xfTitle": "Przenikanie",
+            "xfHint": "Nakłada koniec utworu na początek następnego. Bez przerw używa bardzo krótkiego nakładania. Tylko formaty natywne.",
+            "xfOff": "Wył.", "xfGapless": "Bez przerw",
+            "xfTwo": "2 s", "xfFour": "4 s", "xfSix": "6 s", "xfEight": "8 s",
+            "eqTitle": "Korektor",
+            "eqHint": "Dziesięć pasm w silnikach aplikacji (natywne, wbudowane, MIDI). Ścieżka rezerwowa AVPlayer pozostaje płaska.",
+            "eqReset": "Zerowanie",
             "copyToOther": "Kopiuj zaznaczone do drugiego panelu",
             "moveToOther": "Przenieś zaznaczone do drugiego panelu",
             "selectFirst": "Najpierw zaznacz pliki kółkami wyboru",
@@ -364,7 +385,18 @@ final class AppSettings: ObservableObject {
             "sleepMinutesShort": "%d min",
             "miniPlayer": "Mini odtwarzacz",
             "miniIdle": "Nic nie gra",
-            "miniShowMain": "Pokaż główne okno"
+            "miniShowMain": "Pokaż główne okno",
+            "metadataTitle": "Metadane (ID3)",
+            "tagTitleLabel": "Tytuł", "tagArtistLabel": "Wykonawca",
+            "tagAlbumLabel": "Album", "tagTrackLabel": "Utwór",
+            "tagYearLabel": "Rok", "tagGenreLabel": "Gatunek",
+            "tagCommentLabel": "Komentarz",
+            "tagSave": "Zapisz tagi", "tagReload": "Odśwież",
+            "tagsSaved": "Tagi zapisane", "tagsSaveFailed": "Nie udało się zapisać tagów",
+            "tagsUnsaved": "Niezapisane zmiany",
+            "tagsFormatNote": "Tag ID3v2 — zapisywany w pliku",
+            "tagsMp3Only": "Edycja tagów jest dostępna dla plików MP3 (ID3). Inne formaty mają własne systemy tagów.",
+            "tagsNoSelection": "Wybierz jeden plik audio lub odtwórz utwór, aby zobaczyć jego tagi."
         ],
         .italian: [
             "left": "Sinistro", "right": "Destro",
@@ -411,8 +443,13 @@ final class AppSettings: ObservableObject {
                 "Riproduci qualcosa per vedere lo spettro. Questa sorgente non alimenta l'analizzatore.",
             "effectsSoon":
                 "Equalizzatore e ReplayGain arriveranno nella scheda Effetti (#17, #19).",
-            "utilitiesSoon":
-                "Qui si trova il timer di sospensione. L'editor dei metadati arriva con #21.",
+            "xfTitle": "Dissolvenza",
+            "xfHint": "Sovrappone la fine di un brano all'inizio del successivo. Senza interruzioni usa una sovrapposizione molto breve. Solo formati nativi.",
+            "xfOff": "No", "xfGapless": "Senza pause",
+            "xfTwo": "2 s", "xfFour": "4 s", "xfSix": "6 s", "xfEight": "8 s",
+            "eqTitle": "Equalizzatore",
+            "eqHint": "Dieci bande inserite nei motori interni (nativo, incorporato, MIDI). Il percorso AVPlayer di ripiego resta piatto.",
+            "eqReset": "Azzera",
             "copyToOther": "Copia la selezione nell'altro pannello",
             "moveToOther": "Sposta la selezione nell'altro pannello",
             "selectFirst": "Seleziona prima gli elementi con i cerchi",
@@ -446,7 +483,18 @@ final class AppSettings: ObservableObject {
             "sleepMinutesShort": "%d min",
             "miniPlayer": "Mini riproduttore",
             "miniIdle": "Nulla in riproduzione",
-            "miniShowMain": "Mostra la finestra principale"
+            "miniShowMain": "Mostra la finestra principale",
+            "metadataTitle": "Metadati (ID3)",
+            "tagTitleLabel": "Titolo", "tagArtistLabel": "Artista",
+            "tagAlbumLabel": "Album", "tagTrackLabel": "Traccia",
+            "tagYearLabel": "Anno", "tagGenreLabel": "Genere",
+            "tagCommentLabel": "Commento",
+            "tagSave": "Salva tag", "tagReload": "Ricarica",
+            "tagsSaved": "Tag salvati", "tagsSaveFailed": "Impossibile salvare i tag",
+            "tagsUnsaved": "Modifiche non salvate",
+            "tagsFormatNote": "Tag ID3v2 — salvato nel file",
+            "tagsMp3Only": "La modifica dei tag è disponibile per i file MP3 (ID3). Gli altri formati usano i propri sistemi di tag.",
+            "tagsNoSelection": "Seleziona un file audio o riproduci un brano per vederne i tag."
         ],
         .chinese: [
             "left": "左", "right": "右",
@@ -491,8 +539,13 @@ final class AppSettings: ObservableObject {
             "spectrumTitle": "频谱",
             "spectrumIdle": "播放内容以查看频谱。此音源未接入分析器。",
             "effectsSoon": "均衡器和 ReplayGain 将出现在“效果”标签页（#17、#19）。",
-            "utilitiesSoon":
-                "睡眠定时器位于此处。标签编辑器将随 #21 一同加入。",
+            "xfTitle": "交叉淡化",
+            "xfHint": "将一首歌的结尾与下一首的开头重叠。无缝模式使用极短的重叠。仅限原生格式。",
+            "xfOff": "关闭", "xfGapless": "无缝",
+            "xfTwo": "2 秒", "xfFour": "4 秒", "xfSix": "6 秒", "xfEight": "8 秒",
+            "eqTitle": "均衡器",
+            "eqHint": "十个频段插入到应用内引擎（原生、内嵌、MIDI）。AVPlayer 回退路径保持平坦。",
+            "eqReset": "重置",
             "copyToOther": "将选中项复制到另一侧",
             "moveToOther": "将选中项移动到另一侧",
             "selectFirst": "请先用圆圈复选框选择项目",
@@ -526,7 +579,18 @@ final class AppSettings: ObservableObject {
             "sleepMinutesShort": "%d 分",
             "miniPlayer": "迷你播放器",
             "miniIdle": "当前没有播放",
-            "miniShowMain": "显示主窗口"
+            "miniShowMain": "显示主窗口",
+            "metadataTitle": "元数据（ID3）",
+            "tagTitleLabel": "标题", "tagArtistLabel": "艺术家",
+            "tagAlbumLabel": "专辑", "tagTrackLabel": "音轨",
+            "tagYearLabel": "年份", "tagGenreLabel": "流派",
+            "tagCommentLabel": "注释",
+            "tagSave": "保存标签", "tagReload": "重新载入",
+            "tagsSaved": "标签已保存", "tagsSaveFailed": "无法保存标签",
+            "tagsUnsaved": "未保存的更改",
+            "tagsFormatNote": "ID3v2 标签——写入文件",
+            "tagsMp3Only": "标签编辑仅支持 MP3（ID3）文件。其他格式使用各自的标签系统。",
+            "tagsNoSelection": "选择一个音频文件或播放曲目以查看其标签。"
         ]
     ]
 }

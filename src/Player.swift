@@ -52,6 +52,21 @@ final class PlayerState: NSObject, ObservableObject {
         }
     }
 
+    /// #17 equalizer state shared with the Effects tab. Same singleton pattern
+    /// as SpectrumAnalyzer: PlayerState inserts the EQ node into each engine,
+    /// the tab reads/edits the same object.
+    let equalizer = Equalizer.shared
+
+    /// Track transition behaviour (#14). Default off, so the proven
+    /// stop-then-start path is untouched unless the user opts in.
+    @Published var crossfade: CrossfadeOption = .off {
+        didSet {
+            guard crossfade != oldValue else { return }
+            UserDefaults.standard.set(crossfade.rawValue, forKey: "ac_crossfade")
+            if !crossfade.isEnabled { cancelCrossfade() }
+        }
+    }
+
     private enum Engine { case none, avaudio, avplayer, embedded, midi }
     private var activeEngine: Engine = .none
 
@@ -60,6 +75,24 @@ final class PlayerState: NSObject, ObservableObject {
     private var playerNode: AVAudioPlayerNode?
     private var engineFile: AVAudioFile?
     private var scheduledStartFrame: AVAudioFramePosition = 0
+
+    // Live EQ insert (#17) per engine. Only the in-app engines can host it;
+    // the AVPlayer fallback and AVMIDIPlayer paths stay flat.
+    private var eqNodeA: AVAudioUnitEQ?
+    private var eqNodeC: AVAudioUnitEQ?
+    private var eqNodeE: AVAudioUnitEQ?
+
+    // Engine A transition (#14): a second engine started just before the
+    // outgoing track ends, so gapless/crossfade needs no teardown gap.
+    private var xfEngine: AVAudioEngine?
+    private var xfNode: AVAudioPlayerNode?
+    private var xfFile: AVAudioFile?
+    private var xfIndex: Int?
+    private var xfStartedAt: TimeInterval = 0
+    private var xfOverlap: Double = 0
+    private var xfTimer: Timer?
+    private var isTransitioning = false
+    private var xfEQ: AVAudioUnitEQ?
 
     // Engine B: AVPlayer fallback
     private var fallbackPlayer: AVPlayer?
@@ -121,6 +154,7 @@ final class PlayerState: NSObject, ObservableObject {
         sleepMinutes = UserDefaults.standard.integer(forKey: "ac_sleep_min")
         shuffleMode = UserDefaults.standard.bool(forKey: "ac_shuffle")
         repeatMode = RepeatMode(rawValue: UserDefaults.standard.integer(forKey: "ac_repeat")) ?? .off
+        crossfade = CrossfadeOption(rawValue: UserDefaults.standard.integer(forKey: "ac_crossfade")) ?? .off
     }
 
     /// Builds the play order. Shuffled starts at the requested track and
@@ -200,6 +234,7 @@ final class PlayerState: NSObject, ObservableObject {
         switch activeEngine {
         case .avaudio:
             guard let node = playerNode else { return }
+            if isTransitioning { cancelCrossfade() }
             if node.isPlaying {
                 node.pause()
                 isPlaying = false
@@ -378,6 +413,7 @@ final class PlayerState: NSObject, ObservableObject {
             engine.connect(node, to: engine.mainMixerNode, format: file.processingFormat)
             engine.mainMixerNode.outputVolume = Float(volume)
             SpectrumAnalyzer.shared.attach(to: engine)   // #16 visualizer tap
+            eqNodeA = Equalizer.shared.install(on: engine)   // #17 insert between mixer and output
             try engine.start()
             node.scheduleFile(file, at: nil)
             node.play()
@@ -497,6 +533,7 @@ final class PlayerState: NSObject, ObservableObject {
             engine.connect(node, to: engine.mainMixerNode, format: format)
             engine.mainMixerNode.outputVolume = Float(volume)
             SpectrumAnalyzer.shared.attach(to: engine)   // #16 visualizer tap
+            eqNodeC = Equalizer.shared.install(on: engine)   // #17 insert between mixer and output
             try engine.start()
             engineC = engine
             srcNode = node
@@ -558,6 +595,7 @@ final class PlayerState: NSObject, ObservableObject {
         engine.connect(sampler, to: engine.mainMixerNode, format: nil)
         engine.mainMixerNode.outputVolume = Float(volume)
         SpectrumAnalyzer.shared.attach(to: engine)   // #16 visualizer tap
+        eqNodeE = Equalizer.shared.install(on: engine)   // #17 insert between mixer and output
 
         let sequencer = AVAudioSequencer(audioEngine: engine)
         do {
@@ -652,9 +690,122 @@ final class PlayerState: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - Crossfade / gapless (#14)
+
+    /// The queue slot the upcoming track would occupy, or nil when a transition
+    /// would not line up (repeat-one, or the last track with repeat off). The
+    /// shuffled repeat-all wrap is left to `trackEnded` because it re-permutes
+    /// the queue, which would invalidate a preloaded target.
+    private func crossfadeTargetIndex() -> Int? {
+        guard crossfade.isEnabled, !queue.isEmpty, repeatMode != .one else { return nil }
+        if queueIndex + 1 < queue.count { return queueIndex + 1 }
+        if repeatMode == .all && !shuffleMode { return 0 }
+        return nil
+    }
+
+    private func beginCrossfade() {
+        guard activeEngine == .avaudio, !isTransitioning else { return }
+        guard let nextIndex = crossfadeTargetIndex() else { return }
+        let item = queue[nextIndex]
+        let ext = (item.name as NSString).pathExtension
+        guard AudioFormats.route(forExtension: ext) == .native else { return }
+        do {
+            let file = try AVAudioFile(forReading: item.url)
+            let engine = AVAudioEngine()
+            let node = AVAudioPlayerNode()
+            engine.attach(node)
+            engine.connect(node, to: engine.mainMixerNode, format: file.processingFormat)
+            engine.mainMixerNode.outputVolume = Float(volume)
+            SpectrumAnalyzer.shared.attach(to: engine)
+            xfEQ = Equalizer.shared.install(on: engine)
+            try engine.start()
+            node.scheduleFile(file, at: nil)
+            node.volume = crossfade.isGapless ? 1 : 0
+            node.play()
+            playerNode?.volume = 1
+            xfEngine = engine
+            xfNode = node
+            xfFile = file
+            xfIndex = nextIndex
+            xfOverlap = crossfade.overlap
+            xfStartedAt = ProcessInfo.processInfo.systemUptime
+            isTransitioning = true
+            if !crossfade.isGapless { startCrossfadeRamp() }
+        } catch {
+            cancelCrossfade()
+        }
+    }
+
+    private func startCrossfadeRamp() {
+        xfTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.02, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.rampCrossfade() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        xfTimer = timer
+    }
+
+    private func rampCrossfade() {
+        guard isTransitioning else { return }
+        let elapsed = ProcessInfo.processInfo.systemUptime - xfStartedAt
+        playerNode?.volume = Float(Crossfade.fadeOut(elapsed: elapsed, overlap: xfOverlap))
+        xfNode?.volume = Float(Crossfade.fadeIn(elapsed: elapsed, overlap: xfOverlap))
+    }
+
+    /// Promotes the pre-started engine to be the live one when the outgoing
+    /// track ends. Only Engine A is torn down; the incoming engine keeps
+    /// running so there is no silence between the two tracks.
+    private func finishCrossfade() {
+        guard isTransitioning, let nextIndex = xfIndex,
+              queue.indices.contains(nextIndex), let nextFile = xfFile,
+              let engine = xfEngine, let node = xfNode else {
+            cancelCrossfade()
+            if currentTrack != nil { trackEnded() }
+            return
+        }
+        let elapsed = ProcessInfo.processInfo.systemUptime - xfStartedAt
+        xfTimer?.invalidate()
+        xfTimer = nil
+        teardownEngineA()
+        eqNodeA = xfEQ
+        xfEQ = nil
+        audioEngine = engine
+        playerNode = node
+        engineFile = nextFile
+        scheduledStartFrame = 0
+        node.volume = 1
+        let seconds = Double(nextFile.length) / nextFile.processingFormat.sampleRate
+        if seconds.isFinite, seconds > 0 { duration = seconds }
+        queueIndex = nextIndex
+        currentTrack = queue[nextIndex]
+        currentTime = min(max(0, elapsed), duration)
+        isPlaying = true
+        userPaused = false
+        xfEngine = nil
+        xfNode = nil
+        xfFile = nil
+        xfIndex = nil
+        isTransitioning = false
+        publishNowPlaying()
+    }
+
+    private func cancelCrossfade() {
+        xfTimer?.invalidate()
+        xfTimer = nil
+        if let engine = xfEngine { engine.stop() }
+        if let eq = xfEQ { Equalizer.shared.uninstall(eq); xfEQ = nil }
+        xfEngine = nil
+        xfNode = nil
+        xfFile = nil
+        xfIndex = nil
+        isTransitioning = false
+        playerNode?.volume = 1
+    }
+
     // MARK: - Seek & position
 
     func seek(to target: TimeInterval) {
+        if isTransitioning { cancelCrossfade() }
         let clamped = min(max(0, target), max(0, duration))
         switch activeEngine {
         case .avaudio:
@@ -730,9 +881,18 @@ final class PlayerState: NSObject, ObservableObject {
                     currentTime = min(position, duration)
                 }
             }
+            if crossfade.isEnabled && !isTransitioning
+                && Crossfade.shouldTransition(position: currentTime, duration: duration,
+                                              overlap: crossfade.overlap) {
+                beginCrossfade()
+            }
             if isPlaying && !userPaused && !node.isPlaying
                 && duration > 0 && currentTime >= duration - 0.25 {
-                trackEnded()
+                if isTransitioning {
+                    finishCrossfade()
+                } else {
+                    trackEnded()
+                }
             }
         case .avplayer:
             break // position arrives via periodic observer
@@ -773,9 +933,11 @@ final class PlayerState: NSObject, ObservableObject {
         fallbackPlayer?.volume = Float(volume)
         engineC?.mainMixerNode.outputVolume = Float(volume)
         eEngine?.mainMixerNode.outputVolume = Float(volume)
+        xfEngine?.mainMixerNode.outputVolume = Float(volume)
     }
 
     private func teardownPlayback() {
+        cancelCrossfade()
         ticker?.invalidate()
         ticker = nil
         if let observer = endObserver {
@@ -795,6 +957,7 @@ final class PlayerState: NSObject, ObservableObject {
         engineCSeekTarget = nil
         engineCEnded = false
         engineCLock.unlock()
+        if let eq = eqNodeC { Equalizer.shared.uninstall(eq); eqNodeC = nil }
         if let engine = engineC {
             engine.stop()
         }
@@ -807,6 +970,7 @@ final class PlayerState: NSObject, ObservableObject {
         pullDecoder = nil
 
         if let seq = eSequencer { seq.stop() }
+        if let eq = eqNodeE { Equalizer.shared.uninstall(eq); eqNodeE = nil }
         if let engine = eEngine { engine.stop() }
         eSequencer = nil
         eSampler = nil
@@ -824,6 +988,7 @@ final class PlayerState: NSObject, ObservableObject {
     }
 
     private func teardownEngineA() {
+        if let eq = eqNodeA { Equalizer.shared.uninstall(eq); eqNodeA = nil }
         playerNode?.stop()
         audioEngine?.stop()
         playerNode = nil
