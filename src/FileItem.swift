@@ -24,15 +24,15 @@ enum AudioFormats {
     /// Audio formats the app recognizes but cannot decode yet.
     /// Kept out of `extensions` so they never show as playable.
     static let unsupportedExtensions: Set<String> = [
-        "wma", "ape", "dsf", "dff"
+        "wma", "ape"
     ]
-    /// Formats handled by the embedded C decoders (DUMB + stb_vorbis + VOC + WavPack + libFLAC).
+    /// Formats handled by the embedded C decoders (DUMB + stb_vorbis + VOC + WavPack + libFLAC + DSD).
     static let embeddedExtensions: Set<String> = [
         "ogg", "oga",
         "mod", "s3m", "xm", "it",
         "669", "amf", "ams", "dsm", "far", "mtm", "okt", "psm", "ptm", "stm", "ult",
         "voc",
-        "wv"
+        "wv", "dsf", "dff"
     ]
     /// MIDI (native AVMIDIPlayer with system sound bank).
     static let midiExtensions: Set<String> = ["mid", "midi", "rmi"]

@@ -7,6 +7,7 @@
 #include "stb_vorbis.c" /* declarations only (no STB_VORBIS_IMPLEMENTATION here) */
 #include "wavpack.h"
 #include "FLAC/stream_decoder.h"
+#include "dsddec.c"
 
 #define OUT_RATE 44100
 /* DUMB delta_time = 65536 (units/sec) / output rate: fixed-point seconds per
@@ -21,7 +22,8 @@ enum dec_kind {
     DEC_KIND_VORBIS,
     DEC_KIND_VOC,
     DEC_KIND_WAVPACK,
-    DEC_KIND_OGGFLAC
+    DEC_KIND_OGGFLAC,
+    DEC_KIND_DSD
 };
 
 struct dec_decoder {
@@ -71,6 +73,8 @@ struct dec_decoder {
     unsigned int of_rate;
     double of_scale;       /* 1 / full-scale for of_buf's fixed-point samples */
     int of_failed;         /* decoder reported an error / end of stream */
+    /* DSD (DSF/DFF) */
+    dsd_dec *dsd;
 };
 
 /* ------------------------------------------------------------------ */
@@ -921,10 +925,20 @@ void *dec_open(const void *data, size_t size) {
     if (size >= 8 && memcmp(bytes, "wvpk", 4) == 0) {
         if (wavpack_open(d)) return d;
         /* Recognized WavPack container that will not open (corrupt/truncated):
-           fail cleanly rather than re-probing it as a tracker module. */
+            fail cleanly rather than re-probing it as a tracker module. */
         free(d->data);
         free(d);
         return NULL;
+    }
+
+    /* DSD: DSF (Sony) or DFF (Philips) */
+    if (dsd_is_dsf(bytes, size) || dsd_is_dff(bytes, size)) {
+        d->dsd = dsd_open(bytes, size);
+        if (d->dsd) {
+            d->kind = DEC_KIND_DSD;
+            d->duration = dsd_duration(d->dsd);
+            return d;
+        }
     }
 
     /* tracker module via DUMB (any supported format) */
@@ -971,6 +985,9 @@ void dec_close(void *vd) {
             break;
         case DEC_KIND_OGGFLAC:
             oggflac_teardown(d);
+            break;
+        case DEC_KIND_DSD:
+            if (d->dsd) dsd_close(d->dsd);
             break;
         default:
             break;
@@ -1026,6 +1043,10 @@ long dec_render(void *vd, float *out, long frames) {
             break;
         case DEC_KIND_OGGFLAC:
             produced = oggflac_fill(d, out, frames);
+            break;
+        case DEC_KIND_DSD:
+            if (!d->dsd) return 0;
+            produced = dsd_render(d->dsd, out, frames);
             break;
         default:
             return 0;
@@ -1106,6 +1127,13 @@ int dec_seek(void *vd, double seconds) {
             d->res_frac = 0;
             d->res_has_prev = 0;
             d->pos_frames = (long)(seconds * (double)OUT_RATE);
+            return 1;
+        }
+        case DEC_KIND_DSD: {
+            if (!d->dsd) return 0;
+            dsd_seek(d->dsd, seconds);
+            d->pos_frames = (long)(seconds * (double)OUT_RATE);
+            if (d->pos_frames < 0) d->pos_frames = 0;
             return 1;
         }
         default:
