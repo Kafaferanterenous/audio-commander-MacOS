@@ -1,12 +1,10 @@
 import Foundation
 
-/// User-facing track-transition options (#14).
-///
 /// `gapless` is a very short overlap: the incoming track starts just before the
-/// outgoing one ends, so there is no silent teardown gap. The other values are
-/// true crossfades of 2–8 seconds.
+/// outgoing one ends, so there is no silent teardown gap. The other value is
+/// a true 3-second crossfade.
 enum CrossfadeOption: Int, CaseIterable, Identifiable {
-    case off, gapless, two, four, six, eight
+    case off, gapless, three
 
     var id: Int { rawValue }
 
@@ -14,10 +12,7 @@ enum CrossfadeOption: Int, CaseIterable, Identifiable {
         switch self {
         case .off: return 0
         case .gapless: return 0.08
-        case .two: return 2
-        case .four: return 4
-        case .six: return 6
-        case .eight: return 8
+        case .three: return 3
         }
     }
 
@@ -30,10 +25,7 @@ enum CrossfadeOption: Int, CaseIterable, Identifiable {
         switch self {
         case .off: return "xfOff"
         case .gapless: return "xfGapless"
-        case .two: return "xfTwo"
-        case .four: return "xfFour"
-        case .six: return "xfSix"
-        case .eight: return "xfEight"
+        case .three: return "xfThree"
         }
     }
 }

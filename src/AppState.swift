@@ -16,7 +16,7 @@ enum Language: String, CaseIterable, Identifiable {
 }
 
 enum AppThemeKind: String, CaseIterable, Identifiable {
-    case dark, light, pastel, blue
+    case dark, light, pastel, steelBlue, custom
     var id: String { rawValue }
 
     var localizedNameKey: String {
@@ -24,7 +24,8 @@ enum AppThemeKind: String, CaseIterable, Identifiable {
         case .dark: return "themeDark"
         case .light: return "themeLight"
         case .pastel: return "themePastel"
-        case .blue: return "themeBlue"
+        case .steelBlue: return "themeSteelBlue"
+        case .custom: return "themeCustom"
         }
     }
 }
@@ -60,23 +61,95 @@ struct ThemePalette {
                 colorScheme: .light)
         case .pastel:
             return ThemePalette(
-                bgTop: Color(red: 0.99, green: 0.93, blue: 0.96),
-                bgBottom: Color(red: 0.91, green: 0.88, blue: 0.99),
-                cardOpacityFill: Color.white.opacity(0.50),
-                divider: Color(red: 0.72, green: 0.60, blue: 0.88),
-                accent: Color(red: 0.63, green: 0.42, blue: 0.85),
-                folderColor: Color(red: 0.55, green: 0.68, blue: 0.95),
+                bgTop: Color(red: 0.995, green: 0.945, blue: 0.92),
+                bgBottom: Color(red: 0.975, green: 0.925, blue: 0.885),
+                cardOpacityFill: Color.white.opacity(0.55),
+                divider: Color(red: 0.78, green: 0.62, blue: 0.52),
+                accent: Color(red: 0.72, green: 0.52, blue: 0.42),
+                folderColor: Color(red: 0.58, green: 0.66, blue: 0.92),
                 colorScheme: .light)
-        case .blue:
+        case .steelBlue:
             return ThemePalette(
-                bgTop: Color(red: 0.035, green: 0.10, blue: 0.21),
-                bgBottom: Color(red: 0.07, green: 0.17, blue: 0.33),
-                cardOpacityFill: Color.white.opacity(0.06),
+                bgTop: Color(red: 0.06, green: 0.14, blue: 0.22),
+                bgBottom: Color(red: 0.09, green: 0.19, blue: 0.31),
+                cardOpacityFill: Color.white.opacity(0.07),
                 divider: Color.white.opacity(0.16),
-                accent: Color(red: 0.44, green: 0.72, blue: 1.00),
-                folderColor: Color(red: 0.52, green: 0.80, blue: 0.98),
+                accent: Color(red: 0.48, green: 0.72, blue: 0.95),
+                folderColor: Color(red: 0.56, green: 0.80, blue: 0.98),
                 colorScheme: .dark)
+        case .custom:
+            let c = CustomPalette.load()
+            return c.toThemePalette()
         }
+    }
+}
+
+
+struct CustomPalette {
+    var bgTop: Color
+    var bgBottom: Color
+    var cardOpacityFill: Color
+    var divider: Color
+    var accent: Color
+    var folderColor: Color
+    var isDark: Bool
+
+    static func defaults() -> CustomPalette {
+        return CustomPalette(
+            bgTop: Color(red: 0.085, green: 0.075, blue: 0.13),
+            bgBottom: Color(red: 0.12, green: 0.11, blue: 0.19),
+            cardOpacityFill: Color.white.opacity(0.04),
+            divider: Color.white.opacity(0.10),
+            accent: Color(red: 0.78, green: 0.66, blue: 0.98),
+            folderColor: Color(red: 0.55, green: 0.62, blue: 0.95),
+            isDark: true)
+    }
+
+    func toThemePalette() -> ThemePalette {
+        return ThemePalette(
+            bgTop: bgTop,
+            bgBottom: bgBottom,
+            cardOpacityFill: cardOpacityFill,
+            divider: divider,
+            accent: accent,
+            folderColor: folderColor,
+            colorScheme: isDark ? .dark : .light)
+    }
+
+    static func load() -> CustomPalette {
+        let d = UserDefaults.standard
+        func c(_ k: String) -> Color? {
+            guard let data = d.data(forKey: k),
+                  let cod = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSColor.self, from: data) else { return nil }
+            return Color(cod)
+        }
+        if let bgTop = c("ac_c_bgTop"),
+           let bgBottom = c("ac_c_bgBottom"),
+           let card = c("ac_c_card"),
+           let divider = c("ac_c_div"),
+           let accent = c("ac_c_accent"),
+           let folder = c("ac_c_folder") {
+            return CustomPalette(bgTop: bgTop, bgBottom: bgBottom, cardOpacityFill: card, divider: divider, accent: accent, folderColor: folder, isDark: d.bool(forKey: "ac_c_isDark"))
+        }
+        return defaults()
+    }
+
+    func save() {
+        let d = UserDefaults.standard
+        func s(_ k: String, _ col: Color) {
+            if let ns = NSColor(col).usingColorSpace(.sRGB) {
+                if let data = try? NSKeyedArchiver.archivedData(withRootObject: ns, requiringSecureCoding: false) {
+                    d.set(data, forKey: k)
+                }
+            }
+        }
+        s("ac_c_bgTop", bgTop)
+        s("ac_c_bgBottom", bgBottom)
+        s("ac_c_card", cardOpacityFill)
+        s("ac_c_div", divider)
+        s("ac_c_accent", accent)
+        s("ac_c_folder", folderColor)
+        d.set(isDark, forKey: "ac_c_isDark")
     }
 }
 
@@ -101,6 +174,9 @@ final class AppSettings: ObservableObject {
 
     @Published var showAllFiles: Bool {
         didSet { UserDefaults.standard.set(showAllFiles, forKey: "ac_show_all") }
+    }
+    @Published var openAtFullSize: Bool {
+        didSet { UserDefaults.standard.set(openAtFullSize, forKey: "ac_open_full") }
     }
 
     func requestSettings() { settingsRequest += 1 }
@@ -175,6 +251,7 @@ final class AppSettings: ObservableObject {
         fontScale = stored > 0 ? stored : 1.0
         selectedSkin = defaults.string(forKey: "ac_skn")
         showAllFiles = defaults.bool(forKey: "ac_show_all")
+        openAtFullSize = defaults.object(forKey: "ac_open_full") == nil ? true : defaults.bool(forKey: "ac_open_full")
         loadSkinsFromDisk()
     }
 
@@ -225,7 +302,7 @@ final class AppSettings: ObservableObject {
             "shuffleOn": "Shuffle on", "shuffleOff": "Shuffle off",
             "repeatOff": "Repeat off", "repeatAll": "Repeat all",
             "repeatOne": "Repeat one",
-            "drawerTitle": "Inspector", "drawerLibrary": "Library",
+            "drawerTitle": "", "drawerLibrary": "Library",
             "drawerEffects": "Effects", "drawerUtilities": "Utilities",
             "newPlaylist": "New", "importM3U": "Import…",
             "playlistName": "Playlist name", "noPlaylists":
@@ -250,10 +327,10 @@ final class AppSettings: ObservableObject {
             "xfTitle": "Crossfade",
             "xfHint": "Overlaps the end of one track with the start of the next. Gapless uses a very short overlap. Native formats only.",
             "xfOff": "Off", "xfGapless": "Gapless",
-            "xfTwo": "2 s", "xfFour": "4 s", "xfSix": "6 s", "xfEight": "8 s",
+            "xfThree": "3 s",
             "eqTitle": "Equalizer",
             "eqHint": "Ten bands inserted into the in-app engines (native, embedded, MIDI). The AVPlayer fallback path stays flat.",
-            "eqReset": "Reset",
+            "eqOn": "On", "eqOff": "Off", "eqReset": "Reset",
             "eqPresets": "Presets",
             "eqPreset_flat": "Flat", "eqPreset_pop": "Pop", "eqPreset_rock": "Rock",
             "eqPreset_classical": "Classical", "eqPreset_jazz": "Jazz",
@@ -286,7 +363,10 @@ final class AppSettings: ObservableObject {
             "settings": "Settings", "version": "Version",
             "fontSize": "Font size", "languageLabel": "Language", "themeLabel": "Theme",
             "themeDark": "Dark", "themeLight": "Light",
-            "themePastel": "Pastel", "themeBlue": "Blue",
+            "themePastel": "Pastel",             "themeSteelBlue": "Steel Blue", "themeCustom": "Custom",
+            "customPalette": "Custom palette", "customBgTop": "Background top", "customBgBottom": "Background bottom",
+            "customCard": "Card", "customDivider": "Divider", "customAccent": "Accent", "customFolder": "Folder",
+            "customIsDark": "Dark scheme", "customApply": "Apply", "customReset": "Reset",
             "close": "Close",
             "openCtx": "Open", "finderCtx": "Show in Finder",
             "stopTip": "Playing — click to stop",
@@ -343,7 +423,7 @@ final class AppSettings: ObservableObject {
             "shuffleOn": "Losowanie włączone", "shuffleOff": "Losowanie wyłączone",
             "repeatOff": "Powtarzanie wyłączone", "repeatAll": "Powtarzaj wszystko",
             "repeatOne": "Powtarzaj utwór",
-            "drawerTitle": "Inspektor", "drawerLibrary": "Biblioteka",
+            "drawerTitle": "", "drawerLibrary": "Biblioteka",
             "drawerEffects": "Efekty", "drawerUtilities": "Narzędzia",
             "newPlaylist": "Nowa", "importM3U": "Importuj…",
             "playlistName": "Nazwa playlisty", "noPlaylists":
@@ -368,10 +448,10 @@ final class AppSettings: ObservableObject {
             "xfTitle": "Przenikanie",
             "xfHint": "Nakłada koniec utworu na początek następnego. Bez przerw używa bardzo krótkiego nakładania. Tylko formaty natywne.",
             "xfOff": "Wył.", "xfGapless": "Bez przerw",
-            "xfTwo": "2 s", "xfFour": "4 s", "xfSix": "6 s", "xfEight": "8 s",
+            "xfThree": "3 s",
             "eqTitle": "Korektor",
             "eqHint": "Dziesięć pasm w silnikach aplikacji (natywne, wbudowane, MIDI). Ścieżka rezerwowa AVPlayer pozostaje płaska.",
-            "eqReset": "Zerowanie",
+            "eqOn": "On", "eqOff": "Off", "eqReset": "Zerowanie",
             "eqPresets": "Presety",
             "eqPreset_flat": "Płasko", "eqPreset_pop": "Pop", "eqPreset_rock": "Rock",
             "eqPreset_classical": "Klasyka", "eqPreset_jazz": "Jazz",
@@ -404,7 +484,10 @@ final class AppSettings: ObservableObject {
             "settings": "Ustawienia", "version": "Wersja",
             "fontSize": "Rozmiar czcionki", "languageLabel": "Język", "themeLabel": "Motyw",
             "themeDark": "Ciemny", "themeLight": "Jasny",
-            "themePastel": "Pastelowy", "themeBlue": "Niebieski",
+            "themePastel": "Pastelowy",             "themeSteelBlue": "Stalowy niebieski", "themeCustom": "Własny",
+            "customPalette": "Paleta własna", "customBgTop": "Tło góra", "customBgBottom": "Tło dół",
+            "customCard": "Karta", "customDivider": "Rozdzielacz", "customAccent": "Akcent", "customFolder": "Folder",
+            "customIsDark": "Ciemny schemat", "customApply": "Zastosuj", "customReset": "Zerowanie",
             "close": "Zamknij",
             "openCtx": "Otwórz", "finderCtx": "Pokaż w Finderze",
             "stopTip": "Odtwarzanie — kliknij, aby zatrzymać",
@@ -461,7 +544,7 @@ final class AppSettings: ObservableObject {
             "shuffleOn": "Casuale attivo", "shuffleOff": "Casuale disattivato",
             "repeatOff": "Ripetizione disattivata", "repeatAll": "Ripeti tutto",
             "repeatOne": "Ripeti brano",
-            "drawerTitle": "Inspector", "drawerLibrary": "Libreria",
+            "drawerTitle": "", "drawerLibrary": "Libreria",
             "drawerEffects": "Effetti", "drawerUtilities": "Utilità",
             "newPlaylist": "Nuova", "importM3U": "Importa…",
             "playlistName": "Nome playlist", "noPlaylists":
@@ -486,10 +569,10 @@ final class AppSettings: ObservableObject {
             "xfTitle": "Dissolvenza",
             "xfHint": "Sovrappone la fine di un brano all'inizio del successivo. Senza interruzioni usa una sovrapposizione molto breve. Solo formati nativi.",
             "xfOff": "No", "xfGapless": "Senza pause",
-            "xfTwo": "2 s", "xfFour": "4 s", "xfSix": "6 s", "xfEight": "8 s",
+            "xfThree": "3 s",
             "eqTitle": "Equalizzatore",
             "eqHint": "Dieci bande inserite nei motori interni (nativo, incorporato, MIDI). Il percorso AVPlayer di ripiego resta piatto.",
-            "eqReset": "Azzera",
+            "eqOn": "On", "eqOff": "Off", "eqReset": "Azzera",
             "eqPresets": "Predefiniti",
             "eqPreset_flat": "Piatto", "eqPreset_pop": "Pop", "eqPreset_rock": "Rock",
             "eqPreset_classical": "Classico", "eqPreset_jazz": "Jazz",
@@ -522,7 +605,10 @@ final class AppSettings: ObservableObject {
             "settings": "Impostazioni", "version": "Versione",
             "fontSize": "Dimensione testo", "languageLabel": "Lingua", "themeLabel": "Tema",
             "themeDark": "Scuro", "themeLight": "Chiaro",
-            "themePastel": "Pastello", "themeBlue": "Blu",
+            "themePastel": "Pastello",             "themeSteelBlue": "Blu acciaio", "themeCustom": "Personalizzato",
+            "customPalette": "Tavolozza personalizzata", "customBgTop": "Sfondo alto", "customBgBottom": "Sfondo basso",
+            "customCard": "Scheda", "customDivider": "Divisore", "customAccent": "Accento", "customFolder": "Cartella",
+            "customIsDark": "Schema scuro", "customApply": "Applica", "customReset": "Ripristina",
             "close": "Chiudi",
             "openCtx": "Apri", "finderCtx": "Mostra nel Finder",
             "stopTip": "In riproduzione — clicca per fermare",
@@ -579,7 +665,7 @@ final class AppSettings: ObservableObject {
             "shuffleOn": "随机播放开", "shuffleOff": "随机播放关",
             "repeatOff": "不重复", "repeatAll": "全部重复",
             "repeatOne": "单曲重复",
-            "drawerTitle": "检查器", "drawerLibrary": "媒体库",
+            "drawerTitle": "", "drawerLibrary": "媒体库",
             "drawerEffects": "效果", "drawerUtilities": "工具",
             "newPlaylist": "新建", "importM3U": "导入…",
             "playlistName": "播放列表名称", "noPlaylists":
@@ -602,10 +688,10 @@ final class AppSettings: ObservableObject {
             "xfTitle": "交叉淡化",
             "xfHint": "将一首歌的结尾与下一首的开头重叠。无缝模式使用极短的重叠。仅限原生格式。",
             "xfOff": "关闭", "xfGapless": "无缝",
-            "xfTwo": "2 秒", "xfFour": "4 秒", "xfSix": "6 秒", "xfEight": "8 秒",
+            "xfThree": "3 秒",
             "eqTitle": "均衡器",
             "eqHint": "十个频段插入到应用内引擎（原生、内嵌、MIDI）。AVPlayer 回退路径保持平坦。",
-            "eqReset": "重置",
+            "eqOn": "开", "eqOff": "关", "eqReset": "重置",
             "eqPresets": "预设",
             "eqPreset_flat": "平坦", "eqPreset_pop": "流行", "eqPreset_rock": "摇滚",
             "eqPreset_classical": "古典", "eqPreset_jazz": "爵士",
@@ -638,7 +724,10 @@ final class AppSettings: ObservableObject {
             "settings": "设置", "version": "版本",
             "fontSize": "字体大小", "languageLabel": "语言", "themeLabel": "主题",
             "themeDark": "深色", "themeLight": "浅色",
-            "themePastel": "粉彩", "themeBlue": "蓝色",
+            "themePastel": "粉彩",             "themeSteelBlue": "钢蓝", "themeCustom": "自定义",
+            "customPalette": "自定义调色板", "customBgTop": "顶部背景", "customBgBottom": "底部背景",
+            "customCard": "卡片", "customDivider": "分隔线", "customAccent": "强调色", "customFolder": "文件夹色",
+            "customIsDark": "深色模式", "customApply": "应用", "customReset": "重置",
             "close": "关闭",
             "openCtx": "打开", "finderCtx": "在 Finder 中显示",
             "stopTip": "正在播放——点击停止",

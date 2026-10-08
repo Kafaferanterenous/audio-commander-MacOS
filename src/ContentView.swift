@@ -73,7 +73,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) { saveWindowFrame() }
 
     private func refreshWindowFrame(_ win: NSWindow) {
-        guard let stored = UserDefaults.standard.string(forKey: "ac_win_frame"),
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: "ac_win_frame") == nil,
+           defaults.object(forKey: "ac_open_full") == nil || defaults.bool(forKey: "ac_open_full") {
+            if let visible = NSScreen.main?.visibleFrame {
+                win.setFrame(visible, display: false)
+                saveWindowFrame()
+                return
+            }
+        }
+        guard let stored = defaults.string(forKey: "ac_win_frame"),
               let visible = NSScreen.main?.visibleFrame else { return }
         let r = NSRectFromString(stored)
         guard r.width >= 600, r.height >= 400 else { return }
@@ -516,6 +525,7 @@ struct InspectorDrawer: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .padding(.horizontal, 12)
+            .padding(.top, 10)
             .padding(.bottom, 10)
 
             switch store.drawerTab {
@@ -562,6 +572,15 @@ struct InspectorDrawer: View {
         HStack {
             Text(settings.t("drawerTitle"))
                 .font(settings.scaled(13).weight(.semibold))
+            Spacer()
+            Picker("", selection: $store.drawerTab) {
+                ForEach(DrawerTab.allCases) { t in
+                    Text(settings.t(t.titleKey)).tag(t)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: .infinity)
             Spacer()
             Button {
                 isOpen = false
@@ -984,12 +1003,11 @@ struct InspectorDrawer: View {
                 .font(settings.scaled(10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            crossfadeRow(CrossfadeOption.allCases.prefix(3))
-            crossfadeRow(CrossfadeOption.allCases.dropFirst(3))
+                crossfadeRow(Array(CrossfadeOption.allCases))
         }
     }
 
-    private func crossfadeRow(_ options: ArraySlice<CrossfadeOption>) -> some View {
+    private func crossfadeRow(_ options: [CrossfadeOption]) -> some View {
         HStack(spacing: 4) {
             ForEach(Array(options)) { opt in
                 let selected = store.player.crossfade == opt
@@ -1136,15 +1154,12 @@ struct InspectorDrawer: View {
                     Text(settings.t("eqTitle"))
                         .font(settings.scaled(13).weight(.medium))
                     Spacer()
-                    Button(settings.t("eqReset")) { equalizer.resetAll() }
-                        .buttonStyle(.plain)
-                        .font(settings.scaled(10))
-                        .foregroundStyle(settings.palette.accent)
-                    Toggle("", isOn: Binding(get: { equalizer.isActive },
-                                             set: { equalizer.setActive($0) }))
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
+                    Button(equalizer.isActive ? settings.t("eqOn") : settings.t("eqOff")) {
+                        equalizer.toggleActive()
+                    }
+                    .buttonStyle(.plain)
+                    .font(settings.scaled(10))
+                    .foregroundStyle(settings.palette.accent)
                 }
                 Text(settings.t("eqHint"))
                     .font(settings.scaled(10))
@@ -1513,6 +1528,9 @@ struct SettingsPanel: View {
                             themeSwatch(kind)
                         }
                     }
+                    if settings.theme == .custom {
+                        CustomPaletteEditor()
+                    }
                 }
 
                 skinsSection
@@ -1537,6 +1555,10 @@ struct SettingsPanel: View {
                         .font(settings.scaled(11))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    Toggle("Open at full available size on first launch", isOn: $settings.openAtFullSize)
+                        .toggleStyle(.switch)
+                        .font(settings.scaled(13))
+                        .padding(.top, 4)
                 }
 
                 Divider()
@@ -1794,6 +1816,59 @@ struct PlaybackBar: View {
         case .off: return "repeatOff"
         case .all: return "repeatAll"
         case .one: return "repeatOne"
+        }
+    }
+}
+
+struct ColorPickerRow: View {
+    let labelKey: String
+    @Binding var color: Color
+    @EnvironmentObject var settings: AppSettings
+
+    var body: some View {
+        HStack {
+            Text(settings.t(labelKey))
+                .font(settings.scaled(11))
+                .frame(width: 90, alignment: .leading)
+            ColorPicker("", selection: $color, supportsOpacity: true)
+                .labelsHidden()
+            Spacer()
+        }
+    }
+}
+
+struct CustomPaletteEditor: View {
+    @EnvironmentObject var settings: AppSettings
+    @State private var custom = CustomPalette.load()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider().overlay(settings.palette.divider)
+            Text(settings.t("customPalette"))
+                .font(settings.scaled(12).weight(.medium))
+            ColorPickerRow(labelKey: "customBgTop", color: $custom.bgTop)
+            ColorPickerRow(labelKey: "customBgBottom", color: $custom.bgBottom)
+            ColorPickerRow(labelKey: "customCard", color: $custom.cardOpacityFill)
+            ColorPickerRow(labelKey: "customDivider", color: $custom.divider)
+            ColorPickerRow(labelKey: "customAccent", color: $custom.accent)
+            ColorPickerRow(labelKey: "customFolder", color: $custom.folderColor)
+            Toggle(settings.t("customIsDark"), isOn: $custom.isDark)
+                .font(settings.scaled(11))
+            HStack {
+                Button(settings.t("customApply")) {
+                    custom.save()
+                    settings.selectedSkin = nil
+                    settings.theme = .custom
+                    AppSettings.shared.objectWillChange.send()
+                }
+                .buttonStyle(.bordered)
+                .font(settings.scaled(11))
+                Button(settings.t("customReset")) {
+                    custom = CustomPalette.defaults()
+                }
+                .buttonStyle(.borderless)
+                .font(settings.scaled(11))
+            }
         }
     }
 }

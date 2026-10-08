@@ -176,6 +176,10 @@ final class Equalizer: ObservableObject {
         selectedPreset = nil
     }
 
+    func toggleActive() {
+        isActive.toggle()
+    }
+
     /// Adds the EQ node between the engine's main mixer and its output node.
     ///
     /// The node is always inserted so that flipping the switch mid-track has an
