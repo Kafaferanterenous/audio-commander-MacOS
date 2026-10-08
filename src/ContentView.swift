@@ -517,17 +517,6 @@ struct InspectorDrawer: View {
         VStack(spacing: 0) {
             header
             Divider().overlay(settings.palette.divider)
-            Picker("", selection: $store.drawerTab) {
-                ForEach(DrawerTab.allCases) { t in
-                    Text(settings.t(t.titleKey)).tag(t)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(.horizontal, 12)
-            .padding(.top, 10)
-            .padding(.bottom, 10)
-
             switch store.drawerTab {
             case .library: libraryTab
             case .effects: effectsTab
@@ -569,10 +558,7 @@ struct InspectorDrawer: View {
     }
 
     private var header: some View {
-        HStack {
-            Text(settings.t("drawerTitle"))
-                .font(settings.scaled(13).weight(.semibold))
-            Spacer()
+        HStack(spacing: 8) {
             Picker("", selection: $store.drawerTab) {
                 ForEach(DrawerTab.allCases) { t in
                     Text(settings.t(t.titleKey)).tag(t)
@@ -580,7 +566,6 @@ struct InspectorDrawer: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(maxWidth: .infinity)
             Spacer()
             Button {
                 isOpen = false
@@ -1003,7 +988,7 @@ struct InspectorDrawer: View {
                 .font(settings.scaled(10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-                crossfadeRow(Array(CrossfadeOption.allCases))
+                crossfadeRow([CrossfadeOption.off, CrossfadeOption.gapless, CrossfadeOption.three])
         }
     }
 
