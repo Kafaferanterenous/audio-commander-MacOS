@@ -1316,3 +1316,6 @@ b33 — GOAL #17: 10-BAND EQ (Effects tab)  [DONE, built without verification]
 - goals.txt now 19/25 (76%): #19 ReplayGain DONE (pending ears test).
 - OPEN: ReplayGain + EQ real-Mac ears tests; .replaygain sidecar design still
   unconfirmed by the user; next goals #18 DSD, #20 DTS, #22 APE.
+# v0.6.7 (b36) — #18 DSD DSF/DFF
+- [x] #18 DSD DSF/DFF: embedded decoder (dsf/dff) with DSD→PCM decimation; enabled in embeddedExtensions; decoders ALL PASS.
+- [x] Rebuilt universal, committed 662c7e2 (b36), release v0.6.7 published.
