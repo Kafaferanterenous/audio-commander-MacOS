@@ -1,0 +1,25 @@
+[package]
+name = "ape-rs"
+version = "0.1.0"
+edition = "2024"
+description = "Pure Rust decoder for Monkey's Audio (APE) lossless audio files"
+license = "MIT"
+repository = "https://github.com/lexicone42/ape-rs"
+keywords = ["audio", "ape", "monkeys-audio", "lossless", "decoder"]
+categories = ["multimedia::audio", "encoding"]
+
+# Also emitted as a C static library so the vendored decoders.c can drive it
+# through the thin `ffi` module (see src/ffi.rs). The rlib keeps `cargo test`
+# working for the upstream unit tests.
+[lib]
+name = "ape_rs"
+crate-type = ["staticlib", "rlib"]
+
+# Signal processing code uses wrapping i32/u32 arithmetic (same as C)
+[profile.dev]
+overflow-checks = false
+
+[profile.test]
+overflow-checks = false
+
+# Zero dependencies — pure Rust

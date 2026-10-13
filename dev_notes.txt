@@ -1319,3 +1319,145 @@ b33 — GOAL #17: 10-BAND EQ (Effects tab)  [DONE, built without verification]
 # v0.6.7 (b36) — #18 DSD DSF/DFF
 - [x] #18 DSD DSF/DFF: embedded decoder (dsf/dff) with DSD→PCM decimation; enabled in embeddedExtensions; decoders ALL PASS.
 - [x] Rebuilt universal, committed 662c7e2 (b36), release v0.6.7 published.
+
+# v0.6.9 (b38) — #26 Export / Convert  [2026-10-12]
+- [x] #26 Export / Convert, inspired by storytold/soundcraft (Rust DAW): decode
+  anything the app can play (native CoreAudio + embedded via PullDecoder) and
+  write WAV / AIFF / FLAC with bit-depth, TPDF dither + first-order noise
+  shaping, optional peak normalize (-1 dBFS) or stored ReplayGain gain, plus a
+  per-file loudness report (integrated LUFS, sample peak dBFS, 4x true peak dBTP).
+- Files (new): src/ExportCore.swift (pure, framework-free: ExportFormat /
+  ExportBitDepth / ExportOptions, ExportPCM gain+dither+quantize, ExportTruePeak
+  4x polyphase meter, ExportWriter WAV/AIFF, ExportReport), src/Exporter.swift
+  (@MainActor orchestration + detached worker per file, option persistence
+  ac_export_*), src/ExportSheet.swift (sheet UI). Wired: src/PaneView.swift
+  onExport closure + context-menu, src/ContentView.swift sheet + File menu
+  Export… (Cmd-E) + CommanderStore.export(item:in:)/exportSelection().
+- vendored/decoders: new ac_flac_encode_file() over libFLAC stream_encoder
+  (float in [-1,1], 16/24-bit, compression 5), declared in decoders.h.
+- Localized en/pl/it/zh (export* keys).
+- Harness tools/test_export/main.swift (55 checks, ALL PASS): format/depth
+  tables, quantize/clamp, normalize, dither (silence stays silent, deterministic
+  by seed, <=1 LSB, zero mean, LSB grid), true peak (DC, phase-shifted fs/4 tone
+  recovers the between-sample crest), WAV 16/24/float + AIFF headers, and the
+  production FLAC encoder cross-decoded by the independent system `flac` CLI
+  (16- and 24-bit sample-exact round-trip). Added target to tools/build_tools.sh
+  (links the decoder archive via -import-objc-header src/Bridge.h).
+- THREE REAL BUGS found and fixed by the harness (all would have shipped):
+  1. AIFF writer used the little-endian WAV byte helpers -> COMM/FORM fields
+     byte-swapped (unplayable). Added appendBE16/appendBE32.
+  2. True-peak sinc cutoff was 2x too wide -> gross interpolation overshoot.
+  3. Per-phase DC normalization + evaluating away from the leading edge so a
+     constant signal is not mis-measured as a peak.
+- [x] Full universal rebuild (x86_64 + arm64, 8.0 MB), ad-hoc signed; app
+  launches and stays alive >5 s. NOTE: the app archive had stale FLAC *intrin*
+  .o files (build.sh only checks source mtime, not config.h); removing
+  build/*/obj/*intrin*.o and rebuilding fixed the new undefined-symbol link.
+- [x] All harnesses green: test_export 55, spectrum 52, oggflac 652/0,
+  decoders ALL PASS, id3 46, crossfade 10, equalizer 60, replaygain 24.
+- [x] Info.plist bumped 0.6.9 (build 38); packaged
+  dist/ship/AudioCommander-v0.6.9-macOS.zip. NOT committed / NOT pushed.
+- OPEN: real-Mac ears/eyes test of the sheet (context menu + Cmd-E, destination
+  chooser, dither off vs on, normalize/ReplayGain) still to do.
+
+# v0.6.10 (b39) — #22 APE (Monkey's Audio) + two UI fixes  [2026-10-12]
+- [x] #22 APE playback. #20 DTS was investigated first and is BLOCKED: there is
+  no kAudioFormatDTS in the SDK (only kAudioFormatAC3), no DTS strings in
+  AudioCodecs.component or AudioToolbox/CoreAudio/AVFAudio, and every decoder
+  (libdca, dcadec, FFmpeg dca) is LGPL -> fails the permissive-only policy. So
+  the next viable goal was APE.
+- Decoder choice: vendored **ape-rs** (github lexicone42/ape-rs, MIT, zero deps,
+  pure Rust, 1439 lines) under vendored/ape-rs. It decodes APE v3.99+ bit-exact.
+  (The official Monkey's Audio SDK is BSD-3 now but C++/heavier; FFmpeg's apedec
+  is LGPL.) ape-rs is built as a `staticlib` (Cargo.toml [lib] crate-type) and
+  driven from C through a thin `extern "C"` shim: vendored/ape-rs/src/ffi.rs
+  (ape_open_file / ape_info / ape_seek / ape_read / ape_close) declared for C in
+  vendored/decoders/ape_ffi.h (struct layout must match #[repr(C)] ApeInfoFfi).
+- Added pub seek support to the decoder: APE frames decode independently
+  (filters/predictor reset per frame and read via the seek table), so
+  ApeReader::seek_sample() restarts at the containing frame and drops the leading
+  samples -> sample-accurate seek. New Decoder::seek_to_frame/blocks_per_frame.
+- vendored/decoders/decoders.c: new DEC_KIND_APE; dec_open sniffs the "MAC "
+  fourcc (a real APE header that fails to open is not re-probed as a module),
+  ape_open/ape_fill feed interleaved i32 through the shared pcm_to_stereo path,
+  and dec_close/dec_render/dec_seek got APE cases (scale 1/2^(bits-1)).
+- Build: build.sh now runs `cargo build --release --offline` per arch
+  (x86_64-apple-darwin / aarch64-apple-darwin, target-dir build/$ARCH/cargo) and
+  links the resulting libape_rs.a into the Swift binary; build_tools.sh does the
+  host build once and appends it to every tool that links the decoder archive
+  (incl. test_export). NOTE: linking Rust std took the app from ~8.0 MB to 11 MB.
+- src/FileItem.swift: "ape" moved from unsupportedExtensions to
+  embeddedExtensions; playable/non-implemented text updated (APE now listed as
+  playable, DSD removed from the "not implemented" line too).
+- Harness tools/test_ape.c (22 checks, ALL PASS): 589824 decoded frames checked
+  bit-exact against an INDEPENDENT ffmpeg-derived reference, sample-accurate seek
+  windows at 3 positions, overshoot-seek EOF, probe-duration match, and rejection
+  of a truncated header. Fixtures tools/fixtures/ape/{sample.ape,reference.s16le}
+  were derived by truncating ape-rs's own test.ape at a frame boundary (two
+  frames, ffb reset to a full frame) to keep the committed fixture ~190 KB
+  instead of 4.7 MB; the leading ~8 s of that source is silent, so the window was
+  chosen to include the musical portion (peak > 1000 guard). Registered the
+  target in tools/build_tools.sh.
+- [x] UI fix: the crossfade/gapless buttons in the Effects tab highlight only
+  after switching tabs. Cause: the selection lives on PlayerState, but the
+  parent ContentView observes CommanderStore (whose `player` is a plain `let`),
+  so a click did not invalidate the view. Fix: extracted the section into a
+  private CrossfadeSection view with @ObservedObject on PlayerState, matching the
+  EqualizerSection/ReplayGainSection pattern.
+- [x] UI fix: removed the .skn import affordance from Settings (users will not be
+  authoring their own skins). Deleted the Skins section, its importer button,
+  .fileImporter and the showSkinImporter/skinImportFailed state; the underlying
+  AppSettings skin model is left in place (unused, harmless).
+- [x] Full universal rebuild (x86_64 + arm64, 11 MB), ad-hoc signed; app
+  launches and stays alive >5 s. All harnesses green: test_ape 22/22,
+  test_export 55, spectrum 52, oggflac 652/0, id3 46, crossfade 10,
+  equalizer 60, replaygain 24, test_decoders APE + tracker/VOC PASS.
+- [x] Info.plist bumped 0.6.10 (build 39); packaged
+  dist/ship/AudioCommander-v0.6.10-macOS.zip. NOT committed / NOT pushed.
+- OPEN: real-Mac check that a .ape file lists a duration, plays and scrubs;
+  ears/eyes check of the crossfade highlight fix.
+
+=== 2026-10-13 — GOAL #23: MIDI SOUND BANK + INSTRUMENT (b40) ===
+- CONTEXT: #23 was flagged "AVMIDIPlayer no bank API; sampler risky" and parked.
+  Re-check of the API: AVMIDIPlayer has NO runtime bank setter, but its
+  initialisers take `soundBankURL:` (DLS or SF2) at construction, and the
+  sampler (Engine E) has loadSoundBankInstrument(at:program:bankMSB:bankLSB:).
+  So a real, low-risk feature is possible without the fragile sampler path.
+- NEW FILE src/MIDIBank.swift:
+  * MIDIBankCore (pure: Foundation only) — 128 GM program names, clampProgram,
+    programName/programLabel; bankKind(forExtension:)/(of:) (RIFF+"sfbk"=SF2,
+    RIFF+"DLS "=DLS); a full SMF walker (smfHasProgramChange) that resolves
+    running status and skips meta/sysex; smfInjectingProgramChange() which
+    prepends a delta-0 program change on the first channel of every track that
+    carries none, preserving the rest byte-for-byte (idempotent, multi-track).
+  * MIDIBankStore (@MainActor ObservableObject singleton) — persisted bank path
+    (ac_midi_bank), GM program (ac_midi_program), override toggle
+    (ac_midi_override); customBankURL is nil when the file moved/deleted, so it
+    silently reverts to the system synth; resolvedBankURL = custom ?? system;
+    system GS DLS path centralised here (Player's old gsBankURL constant gone).
+- src/Player.swift:
+  * Engine D: fast path (contentsOf, no bank, no override) UNCHANGED. Otherwise
+    read the SMF into memory (needed for .rmi unwrap and for injection), inject
+    the chosen program only when the file names no instrument, then AVMIDIPlayer
+    (data:soundBankURL:customBank); if the custom bank fails to load, retry with
+    the system synth before falling through to Engine E.
+  * Engine E: load the resolved bank — custom bank at program=chosen, 0/0; the
+    system GS DLS at program=(override ? chosen : 0), 0x79/0x00. The sequencer
+    still lets a file's own program changes win.
+- src/ContentView.swift: Settings gains a private MIDISection (bank name,
+  Choose… via NSOpenPanel filtered to .sf2/.dls with a magic check, Use system,
+  GM instrument menu, override toggle, hint). Invalid pick shows an NSAlert.
+- src/AppState.swift: 8 new keys in all four locales (midiBankTitle,
+  midiBankSystem, midiChooseBank, midiResetBank, midiInstrument, midiOverride,
+  midiHint, midiBankBad).
+- tools/test_midibank/main.swift + build_tools.sh target: compiles the shipping
+  src/MIDIBank.swift and passes 40/40.
+- [x] Full universal rebuild (x86_64 + arm64), typecheck clean; app launches and
+  stays alive >5 s, no crash reports. All harnesses green: midibank 40/40,
+  spectrum 52, id3 46, crossfade 10, equalizer 60, replaygain 24.
+- [x] Info.plist bumped 0.6.11 (build 40). NOT packaged / NOT committed yet.
+- OPEN (needs real Mac + ears): pick an .sf2, confirm a .mid that names no
+  program plays the chosen instrument; a file WITH program changes keeps its
+  own; the override toggle is idempotent on replay; fallback to the system
+  synth when a bank is moved away. Engine E (sampler) remains the fragile
+  fallback and is not the default.

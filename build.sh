@@ -11,6 +11,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$BUILD/x86_64" "$BUILD
 
 CC="xcrun cc"
 SWIFTC="xcrun swiftc"
+CARGO="$(command -v cargo || echo "$HOME/.cargo/bin/cargo")"
+APE_CRATE="vendored/ape-rs/Cargo.toml"
 # HAVE_CONFIG_H: libFLAC's sources only pick up our hand-written config.h with it.
 # HAVE_LROUND is handled inside that config.h (share/compat.h would otherwise
 # declare its own static lround and collide with <math.h>).
@@ -38,10 +40,20 @@ for ARCH in x86_64 arm64; do
     done
     libtool -static -o "$BUILD/$ARCH/libdecoders.a" "$OBJDIR"/*.o
 
+    # Monkey's Audio decoder: pure-Rust ape-rs (MIT) built as a static library
+    # and linked alongside the C archive. Offline: the crate has no deps.
+    case "$ARCH" in
+        x86_64) RUST_TARGET="x86_64-apple-darwin" ;;
+        arm64)  RUST_TARGET="aarch64-apple-darwin" ;;
+    esac
+    "$CARGO" build --release --offline --manifest-path "$APE_CRATE" \
+        --target "$RUST_TARGET" --target-dir "$BUILD/$ARCH/cargo"
+    APE_LIB="$BUILD/$ARCH/cargo/$RUST_TARGET/release/libape_rs.a"
+
     $SWIFTC -O -parse-as-library -target ${ARCH}-apple-macos13.0 \
         -import-objc-header src/Bridge.h \
         src/*.swift -o "$BUILD/$ARCH/${APP_NAME}" \
-        -L"$BUILD/$ARCH" -ldecoders
+        -L"$BUILD/$ARCH" -ldecoders "$APE_LIB"
 
     lipo -remove "$BUILD/$ARCH/libdecoders.a" 2>/dev/null >/dev/null || true
 done

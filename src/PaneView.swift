@@ -14,6 +14,7 @@ struct PaneView: View {
     var onCopySelection: (() -> Void)?
     var onMoveSelection: (() -> Void)?
     var onTrashSelection: (() -> Void)?
+    var onExport: ((FileItem) -> Void)?
 
     private var palette: ThemePalette { settings.palette }
     private var sideTitle: String {
@@ -270,6 +271,10 @@ struct PaneView: View {
             Divider()
             Button(isSelected ? settings.t("deselect") : settings.t("select")) {
                 pane.toggleSelection(item)
+            }
+            if item.isAudio {
+                Divider()
+                Button(settings.t("exportCtx")) { onExport?(item) }
             }
         }
     }

@@ -43,9 +43,20 @@ LIB="$OUT/libdecoders_tools.a"
 rm -f "$LIB"
 libtool -static -o "$LIB" "$OBJ"/*.o
 
-xcrun cc $CFLAGS tools/flacgen.c -o "$OUT/flacgen$SUF" "$LIB" -lm
-xcrun cc $CFLAGS tools/test_oggflac.c -o "$OUT/test_oggflac$SUF" "$LIB" -lm
-xcrun cc $CFLAGS tools/test_decoders.c -o "$OUT/test_decoders$SUF" "$LIB" -lm
+# Monkey's Audio decoder (pure-Rust ape-rs, MIT). decoders.c now references the
+# ape_* shim, so everything that links the C archive must link this too.
+CARGO="$(command -v cargo || echo "$HOME/.cargo/bin/cargo")"
+"$CARGO" build --release --offline --manifest-path vendored/ape-rs/Cargo.toml \
+    --target-dir "$OUT/cargo"
+APE_LIB="$OUT/cargo/release/libape_rs.a"
+
+xcrun cc $CFLAGS tools/flacgen.c -o "$OUT/flacgen$SUF" "$LIB" "$APE_LIB" -lm
+xcrun cc $CFLAGS tools/test_oggflac.c -o "$OUT/test_oggflac$SUF" "$LIB" "$APE_LIB" -lm
+xcrun cc $CFLAGS tools/test_decoders.c -o "$OUT/test_decoders$SUF" "$LIB" "$APE_LIB" -lm
+
+# APE integration harness (#22): links the same decoder archive (and its Rust
+# APE shim) and checks the decoded PCM against the ffmpeg-derived reference.
+xcrun cc $CFLAGS tools/test_ape.c -o "$OUT/test_ape$SUF" "$LIB" "$APE_LIB" -lm
 
 # Spectrum harness (#16): compiles the production src/Spectrum.swift alongside
 # the test, so the FFT and band mapping under test are literally the shipping
@@ -68,4 +79,16 @@ xcrun swiftc -O -o "$OUT/test_equalizer$SUF" src/Equalizer.swift tools/test_equa
 # K-weighting, gating and loudness math under test are the shipping ones.
 xcrun swiftc -O -o "$OUT/test_replaygain$SUF" src/ReplayGain.swift tools/test_replaygain/main.swift
 
-echo "--- tools built: $OUT (flacgen$SUF, test_oggflac$SUF, test_decoders$SUF, test_spectrum$SUF, test_id3$SUF, test_crossfade$SUF, test_equalizer$SUF, test_replaygain$SUF) ---"
+# MIDI bank harness (#23): compiles the production src/MIDIBank.swift, so the GM
+# name table, bank sniffing and SMF program-change injection under test are the
+# shipping ones.
+xcrun swiftc -O -o "$OUT/test_midibank$SUF" src/MIDIBank.swift tools/test_midibank/main.swift
+
+# Export / convert harness (#26): compiles the production src/ExportCore.swift
+# and links the decoder archive so it can call the shipping ac_flac_encode_file().
+# The header bridge gives the Swift test the C prototypes; the result is then
+# handed to the independent system `flac` CLI for a real decode.
+xcrun swiftc -O -import-objc-header src/Bridge.h -o "$OUT/test_export$SUF" \
+    src/ExportCore.swift tools/test_export/main.swift "$LIB" "$APE_LIB" -lm
+
+echo "--- tools built: $OUT (flacgen$SUF, test_oggflac$SUF, test_decoders$SUF, test_ape$SUF, test_spectrum$SUF, test_id3$SUF, test_crossfade$SUF, test_equalizer$SUF, test_replaygain$SUF, test_midibank$SUF, test_export$SUF) ---"

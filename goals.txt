@@ -1,7 +1,9 @@
 AudioCommander — Goal Backlog (merged formats + features)
-Created 2026-09-23. Status as of build 34 (v0.6.5 packaged 2026-10-08;
-b32 = #21, b33 = #14 + #17, b34 = #19 + EQ fixes/presets + spectrum fix).
-19/25 goals complete (76%).
+Created 2026-09-23. Status as of build 40 (v0.6.11, uncommitted;
+b32 = #21, b33 = #14 + #17, b34 = #19 + EQ fixes/presets + spectrum fix,
+b36 = #18 DSD, b38 = #26 Export/Convert, b39 = #22 APE + two UI fixes,
+b40 = #23 MIDI sound bank/instrument + program-change injection).
+23/26 goals complete (88%).
 (F) = format playback, (X) = app feature. Effort: lowest = easiest.
 
 DONE (b18..b22, shipped in v0.6.1):
@@ -31,11 +33,22 @@ DONE (b34, packaged 2026-10-08):
       + 10 EQ presets (chips, persisted, en/pl/it/zh)
       + Spectrum idle-text fix
 
+DONE (b36..b39):
+  18. (F) DSD DSF/DFF          60%   DSD->PCM decimation (b36)
+  26. (X) Export / Convert     60%   decode -> WAV/AIFF/FLAC + dither +
+                                     normalize/ReplayGain + true-peak report
+                                     (b38; inspired by storytold/soundcraft)
+  22. (F) APE Monkey's Audio   70%   pure-Rust ape-rs (MIT) via C shim (b39)
+      + UI: crossfade/gapless buttons now highlight on click (own @ObservedObject)
+      + UI: removed the .skn import affordance from Settings
+
+DONE (b40):
+  23. (X) MIDI instrument/bank 75%   SoundFont (.sf2)/DLS (.dls) bank picker
+                                     + General MIDI instrument + program-change
+                                     injection for files that name none (b40)
+
 REMAINING (priority order):
-  18. (F) DSD DSF/DFF          60%   DSD->PCM decimation needed
-  20. (F) DTS                  65%   no small standalone decoder
-  22. (F) APE                  70%   MAC library, streaming awkward
-  23. (X) MIDI instrument/bank 75%   AVMIDIPlayer no bank API; sampler risky
+  20. (F) DTS                  65%   no small standalone decoder + no CoreAudio/AVF support
   24. (F) WMA                  85%   FFmpeg-only decoder
   25. (F) WMAPro               90%   even heavier
 
@@ -51,8 +64,8 @@ stereo, 5ch, 22.05/44.1/96 kHz) plus reference .oga files from the reference
 PERMANENTLY PARKED / SKIPPED (revisit only on explicit request):
 - MIDI volume (needs sampler engine, stalls on real HW)
 - GM drums channel 10 (same)
-- WavPack DONE in b27 (#11), Ogg FLAC DONE in b30 (#15).
-  APE/DSD/WMA still only via #18/#20/#22/#24/#25
+- WavPack DONE in b27 (#11), Ogg FLAC DONE in b30 (#15), DSD DONE in b36
+  (#18), APE DONE in b39 (#22). DTS/WMA/WMAPro still open via #20/#24/#25.
 
 DONE detail for #16 (b31): Effects drawer tab with a 64-band log-spaced
 spectrum, peak-hold caps, dBFS readout and decade axis labels. Hand-rolled
@@ -97,6 +110,53 @@ frequency response. tools/test_equalizer/main.swift compiles the shipping source
 and passes 24/24 (band table, clamping, guard rails, 0 dB identity across the
 range, boost peaks at the target gain and returns to unity far away, cut is the
 exact reciprocal of boost, clamped -12 dB floor, band 1 octave away is smaller).
+
+DONE detail for #22 (b39): Monkey's Audio is decoded by a vendored pure-Rust
+library, ape-rs (MIT), built as a staticlib and reached from the C decoders
+through a tiny `extern "C"` shim (vendored/ape-rs/src/ffi.rs + ape_ffi.h).
+build.sh / build_tools.sh gained a per-arch `cargo build --offline` step and the
+tools that link the decoder archive also link the resulting libape_rs.a. New
+DEC_KIND_APE in vendored/decoders/decoders.c sniffs the "MAC " fourcc and feeds
+interleaved i32 through the shared pcm_to_stereo path, so APE gets the same
+resampler / seek / EOF behaviour as WavPack and Ogg FLAC; seek restarts at the
+containing frame and drops the leading samples for a sample-accurate result.
+"ape" moved from unsupportedExtensions to embeddedExtensions. tools/test_ape.c
+links the shipping decoder and checks 589824 decoded frames bit-exact against an
+independent ffmpeg-derived reference (fixtures truncated from ape-rs's own
+test.ape to keep the repo small), plus exact-seek, overshoot-EOF, probe-duration
+and reject-truncated cases: 22/22.
+
+DONE detail for b39 UI fixes: the crossfade/gapless buttons in the Effects tab
+are now their own view holding an @ObservedObject on PlayerState (the selection
+lives on the player, which the parent ContentView does not observe), so the row
+highlights immediately instead of only after a tab switch forces a redraw. The
+.skn import affordance was removed from Settings (users are not authoring their
+own skins); the Skins section and its importer state are gone.
+
+DONE detail for #23 (b40): MIDI sound bank + instrument, src/MIDIBank.swift.
+AVMIDIPlayer *does* accept a bank at construction (`soundBankURL:`), so the
+proven Engine D can load a user SoundFont/DLS without the fragile sampler path.
+MIDIBankCore (pure, no AVFoundation/UserDefaults) holds the 128-name General
+MIDI table, bank sniffing (RIFF+"sfbk"=SF2, RIFF+"DLS "=DLS; also by extension)
+and a full SMF walker that reports/handles program changes (running status,
+meta and sysex aware). smfInjectingProgramChange() prepends a delta-0 program
+change on the first channel of every track that names no instrument, byte-for-
+byte preserving the rest so multi-instrument files keep their own arrangement
+and the operation is idempotent. startEngineD keeps its original fast path when
+no bank/override is set, otherwise uses the in-memory SMF (needed for .rmi and
+for injection) with the resolved bank; a custom bank that fails to load falls
+back to the system synth. startEngineE loads the resolved bank (custom bank 0/0
++ chosen program, or the system GS DLS at 0x79/0x00) and honours the override
+for files with no program change. Settings gains a MIDI section: bank name +
+Choose…/Use system (NSOpenPanel filtered to .sf2/.dls, magic-checked) and a GM
+instrument picker + "play files without an instrument using this one" toggle;
+the bank path and program persist (ac_midi_bank / ac_midi_program /
+ac_midi_override), and a moved/deleted bank silently reverts to the system. The
+system GS DLS path was centralised here (Player's old gsBankURL is gone).
+tools/test_midibank/main.swift compiles the shipping source and passes 40/40
+(name table, clamping, extension + magic sniffing, SMF detection with running
+status, injection growth/placement/idempotence/body preservation, multi-track,
+malformed rejects, program clamp).
 
 WIP (not counted above): real-Mac playback verification for b28..b31 (0.6.3),
 the b32 ID3 editor, and both b33 features (crossfade pacing and the EQ's

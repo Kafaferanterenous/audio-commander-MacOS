@@ -2,12 +2,17 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <math.h>
+#include <stdint.h>
 
 #include "dumb.h"
 #include "stb_vorbis.c" /* declarations only (no STB_VORBIS_IMPLEMENTATION here) */
 #include "wavpack.h"
 #include "FLAC/stream_decoder.h"
+#include "FLAC/stream_encoder.h"
 #include "dsddec.c"
+#include "ape_ffi.h"
 
 #define OUT_RATE 44100
 /* DUMB delta_time = 65536 (units/sec) / output rate: fixed-point seconds per
@@ -23,7 +28,8 @@ enum dec_kind {
     DEC_KIND_VOC,
     DEC_KIND_WAVPACK,
     DEC_KIND_OGGFLAC,
-    DEC_KIND_DSD
+    DEC_KIND_DSD,
+    DEC_KIND_APE
 };
 
 struct dec_decoder {
@@ -75,6 +81,17 @@ struct dec_decoder {
     int of_failed;         /* decoder reported an error / end of stream */
     /* DSD (DSF/DFF) */
     dsd_dec *dsd;
+
+    /* Monkey's Audio (APE) — decoded by the vendored pure-Rust ape-rs
+       library (MIT) through the C shim declared in ape_ffi.h. */
+    void *ape;             /* ApeHandle* */
+    int ape_channels;
+    unsigned int ape_rate;
+    int ape_bits;
+    int32_t *ape_buf;      /* interleaved int32 scratch, ape_buf_cap frames */
+    long ape_buf_cap;
+    long ape_buf_frames;   /* frames currently valid in ape_buf */
+    long ape_buf_used;     /* frames already consumed from ape_buf */
 };
 
 /* ------------------------------------------------------------------ */
@@ -623,6 +640,72 @@ static long wavpack_fill(dec_decoder *d, float *out, long frames) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Monkey's Audio (APE, pure-Rust ape-rs, MIT - vendored under         */
+/* vendored/ape-rs). The decoder is reached through the small C shim in */
+/* ape_ffi.h; this file only has to open the memory blob, pull          */
+/* interleaved int32 PCM and hand it to the shared stereo converter.    */
+/* ------------------------------------------------------------------ */
+
+/* APE files always start with the "MAC " fourcc (an ID3v2 tag may precede
+   it on tagged rips, which ape-rs skips internally). */
+static int ape_is_ape(const unsigned char *b, size_t n) {
+    return n >= 4 && memcmp(b, "MAC ", 4) == 0;
+}
+
+static int ape_open(dec_decoder *d) {
+    void *h = ape_open_file(d->data, (size_t)d->size);
+    if (!h) return 0;
+    ape_info_t info;
+    if (!ape_info(h, &info) || info.channels < 1 || info.channels > 2 ||
+        info.sample_rate == 0 || info.bits_per_sample == 0) {
+        ape_close(h);
+        return 0;
+    }
+    long cap = 16384;
+    int32_t *buf =
+        (int32_t *)malloc((size_t)cap * info.channels * sizeof(int32_t));
+    if (!buf) { ape_close(h); return 0; }
+
+    d->kind = DEC_KIND_APE;
+    d->ape = h;
+    d->ape_channels = (int)info.channels;
+    d->ape_rate = info.sample_rate;
+    d->ape_bits = (int)info.bits_per_sample;
+    d->ape_buf = buf;
+    d->ape_buf_cap = cap;
+    d->ape_buf_frames = 0;
+    d->ape_buf_used = 0;
+    if (info.total_frames > 0)
+        d->duration = (double)info.total_frames / (double)info.sample_rate;
+    return 1;
+}
+
+/* Refills the int32 scratch buffer from the APE decoder, then converts it to
+   stereo @OUT_RATE via pcm_to_stereo (which handles mono/stereo and rate). */
+static long ape_fill(dec_decoder *d, float *out, long frames) {
+    long filled = 0;
+    double scale = 1.0 / (double)((uint32_t)1 << (d->ape_bits - 1));
+    while (filled < frames) {
+        if (d->ape_buf_used >= d->ape_buf_frames) {
+            long want = frames - filled;
+            if (want > d->ape_buf_cap) want = d->ape_buf_cap;
+            int64_t got = ape_read(d->ape, d->ape_buf, (size_t)want);
+            if (got <= 0) break;
+            d->ape_buf_frames = (long)got;
+            d->ape_buf_used = 0;
+        }
+        long have = d->ape_buf_frames - d->ape_buf_used;
+        long used = pcm_to_stereo(d,
+                                  d->ape_buf + d->ape_buf_used * d->ape_channels,
+                                  d->ape_channels, 0, scale, d->ape_rate,
+                                  have, out, frames, &filled);
+        if (used <= 0) break;
+        d->ape_buf_used += used;
+    }
+    return filled;
+}
+
+/* ------------------------------------------------------------------ */
 /* Ogg FLAC (libFLAC + libogg, BSD/Xiph - vendored under vendored/flac, */
 /* vendored/ogg). libFLAC owns the Ogg framing, so only the raw file     */
 /* bytes are exposed to it as a read-only memory stream.                  */
@@ -931,6 +1014,16 @@ void *dec_open(const void *data, size_t size) {
         return NULL;
     }
 
+    /* Monkey's Audio: "MAC " fourcc */
+    if (ape_is_ape(bytes, size)) {
+        if (ape_open(d)) return d;
+        /* A genuine APE header that the pure-Rust decoder rejected (e.g. a
+           pre-3.99 stream): stop rather than re-probing it as a module. */
+        free(d->data);
+        free(d);
+        return NULL;
+    }
+
     /* DSD: DSF (Sony) or DFF (Philips) */
     if (dsd_is_dsf(bytes, size) || dsd_is_dff(bytes, size)) {
         d->dsd = dsd_open(bytes, size);
@@ -988,6 +1081,10 @@ void dec_close(void *vd) {
             break;
         case DEC_KIND_DSD:
             if (d->dsd) dsd_close(d->dsd);
+            break;
+        case DEC_KIND_APE:
+            if (d->ape) ape_close(d->ape);
+            free(d->ape_buf);
             break;
         default:
             break;
@@ -1047,6 +1144,9 @@ long dec_render(void *vd, float *out, long frames) {
         case DEC_KIND_DSD:
             if (!d->dsd) return 0;
             produced = dsd_render(d->dsd, out, frames);
+            break;
+        case DEC_KIND_APE:
+            produced = ape_fill(d, out, frames);
             break;
         default:
             return 0;
@@ -1136,6 +1236,18 @@ int dec_seek(void *vd, double seconds) {
             if (d->pos_frames < 0) d->pos_frames = 0;
             return 1;
         }
+        case DEC_KIND_APE: {
+            if (!d->ape) return 0;
+            if (seconds < 0) seconds = 0;
+            uint64_t sample = (uint64_t)(seconds * (double)d->ape_rate + 0.5);
+            if (!ape_seek(d->ape, sample)) return 0;
+            d->ape_buf_frames = 0;
+            d->ape_buf_used = 0;
+            d->res_frac = 0;
+            d->res_has_prev = 0;
+            d->pos_frames = (long)(seconds * (double)OUT_RATE);
+            return 1;
+        }
         default:
             return 0;
     }
@@ -1153,4 +1265,84 @@ double dec_probe_duration(const void *data, size_t size) {
     double dur = dec_duration(d);
     dec_close(d);
     return dur;
+}
+
+/* ------------------------------------------------------------------ */
+/* Native FLAC encoder (lossless export, #26)                          */
+/*                                                                     */
+/* libFLAC's stream encoder is already vendored (BSD/Xiph) for the Ogg */
+/* decoder build. Export reuses it to write standard native .flac files */
+/* at 16 or 24 bits. Samples arrive as interleaved float in [-1, 1];   */
+/* the caller has already applied gain and dither, so here we only     */
+/* scale, clamp and hand blocks to libFLAC. Returns 1 on success and 0 */
+/* on any failure (a partial file is removed so it is never left       */
+/* looking complete).                                                  */
+/* ------------------------------------------------------------------ */
+int ac_flac_encode_file(const float *interleaved, size_t frames,
+                        unsigned int channels, unsigned int sample_rate,
+                        unsigned int bits_per_sample, int compression_level,
+                        const char *path) {
+    if (!interleaved || !path || frames == 0) return 0;
+    if (channels < 1 || channels > 8) return 0;
+    /* FLAC stores integers; 16 and 24 are the useful depths here. */
+    if (bits_per_sample != 16 && bits_per_sample != 24) return 0;
+    if (compression_level < 0) compression_level = 0;
+    if (compression_level > 8) compression_level = 8;
+
+    FLAC__StreamEncoder *enc = FLAC__stream_encoder_new();
+    if (!enc) return 0;
+
+    FLAC__bool ok = true;
+    ok &= FLAC__stream_encoder_set_channels(enc, channels);
+    ok &= FLAC__stream_encoder_set_bits_per_sample(enc, bits_per_sample);
+    ok &= FLAC__stream_encoder_set_sample_rate(enc, sample_rate);
+    ok &= FLAC__stream_encoder_set_compression_level(enc,
+                                                      (unsigned)compression_level);
+    ok &= FLAC__stream_encoder_set_total_samples_estimate(enc,
+                                                          (FLAC__uint64)frames);
+
+    if (ok) {
+        ok = FLAC__stream_encoder_init_file(enc, path, NULL, NULL)
+             == FLAC__STREAM_ENCODER_INIT_STATUS_OK;
+    }
+
+    if (ok) {
+        const double scale = (double)((uint64_t)1 << (bits_per_sample - 1));
+        const int32_t lo = (int32_t)(-(int64_t)scale);
+        const int32_t hi = (int32_t)((int64_t)scale - 1);
+        const size_t block = 4096;
+        FLAC__int32 *buf =
+            (FLAC__int32 *)malloc(block * channels * sizeof(FLAC__int32));
+        if (!buf) {
+            ok = false;
+        } else {
+            size_t off = 0;
+            while (off < frames) {
+                size_t n = frames - off;
+                if (n > block) n = block;
+                size_t count = n * channels;
+                for (size_t i = 0; i < count; i++) {
+                    double v = (double)interleaved[off * channels + i];
+                    if (v > 1.0) v = 1.0;
+                    else if (v < -1.0) v = -1.0;
+                    int32_t q = (int32_t)lround(v * scale);
+                    if (q < lo) q = lo;
+                    else if (q > hi) q = hi;
+                    buf[i] = q;
+                }
+                if (!FLAC__stream_encoder_process_interleaved(
+                        enc, buf, (unsigned)n)) {
+                    ok = false;
+                    break;
+                }
+                off += n;
+            }
+            free(buf);
+        }
+    }
+
+    FLAC__stream_encoder_finish(enc);
+    FLAC__stream_encoder_delete(enc);
+    if (!ok) remove(path);
+    return ok ? 1 : 0;
 }

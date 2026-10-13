@@ -35,6 +35,14 @@ int dec_seek(void *d, double seconds);
 /* One-shot probe: open, measure duration, close. Thread-safe. */
 double dec_probe_duration(const void *data, size_t size);
 
+/* Encodes interleaved float in [-1,1] to a native .flac file. bits_per_sample
+   is 16 or 24; compression_level is 0..8 (5 is a good default). Gain and
+   dither are the caller's job. Returns 1 on success, 0 on failure. */
+int ac_flac_encode_file(const float *interleaved, size_t frames,
+                        unsigned int channels, unsigned int sample_rate,
+                        unsigned int bits_per_sample, int compression_level,
+                        const char *path);
+
 #ifdef __cplusplus
 }
 #endif

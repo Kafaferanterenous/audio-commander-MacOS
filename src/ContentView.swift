@@ -127,6 +127,13 @@ struct AudioCommanderApp: App {
                 }
                 .keyboardShortcut(",", modifiers: .command)
             }
+            // #26 Export / Convert: the checked selection, else the playing track.
+            CommandGroup(replacing: .newItem) {
+                Button(AppSettings.shared.t("exportTitle")) {
+                    CommanderStore.shared.exportSelection()
+                }
+                .keyboardShortcut("e", modifiers: .command)
+            }
             // Linux-spec parity: F5 copies / F6 moves the ACTIVE pane's
             // selection to the other side. F-keys via their function-key
             // Unicode scalars (.function modifier is deprecated).
@@ -330,6 +337,31 @@ final class CommanderStore: ObservableObject {
         right.navigate(to: leftFolder)
     }
 
+    /// Export / convert (#26). Context-menu item: if the clicked file is part
+    /// of the pane's checked selection, export the whole selection; otherwise
+    /// just the clicked file.
+    func export(item: FileItem, in source: PaneState) {
+        let selection = source.selectedItems
+        if selection.count > 1 && selection.contains(where: { $0.id == item.id }) {
+            Exporter.shared.begin(items: selection)
+        } else {
+            Exporter.shared.begin(items: [item])
+        }
+    }
+
+    /// File > Export / Convert…: the active pane's checked selection, else the
+    /// track that is playing.
+    func exportSelection() {
+        let selection = activePane.selectedItems
+        if !selection.isEmpty {
+            Exporter.shared.begin(items: selection)
+        } else if let current = player.currentTrack {
+            Exporter.shared.begin(items: [current])
+        } else {
+            activePane.statusMessage = AppSettings.shared.t("exportSelectFirst")
+        }
+    }
+
     func initialLoad() async {
         await withTaskGroup(of: Void.self) { group in
             group.addTask { await self.left.refresh() }
@@ -342,6 +374,7 @@ struct ContentView: View {
     @ObservedObject private var store = CommanderStore.shared
     @ObservedObject private var settings = AppSettings.shared
     @ObservedObject private var mini = MiniPlayerController.shared
+    @ObservedObject private var exporter = Exporter.shared
     @FocusState private var focusedPane: PaneSide?
 
     var body: some View {
@@ -351,7 +384,8 @@ struct ContentView: View {
                          focusedPane: $focusedPane,
                          onCopySelection: { store.runTransfer(mode: .copy, source: store.left) },
                          onMoveSelection: { store.runTransfer(mode: .move, source: store.left) },
-                         onTrashSelection: { store.trashSelection(in: store.left) })
+                         onTrashSelection: { store.trashSelection(in: store.left) },
+                         onExport: { store.export(item: $0, in: store.left) })
                     .frame(maxWidth: .infinity)
 
                 centerDivider
@@ -360,7 +394,8 @@ struct ContentView: View {
                          focusedPane: $focusedPane,
                          onCopySelection: { store.runTransfer(mode: .copy, source: store.right) },
                          onMoveSelection: { store.runTransfer(mode: .move, source: store.right) },
-                         onTrashSelection: { store.trashSelection(in: store.right) })
+                         onTrashSelection: { store.trashSelection(in: store.right) },
+                         onExport: { store.export(item: $0, in: store.right) })
                     .frame(maxWidth: .infinity)
             }
             .overlay(alignment: .top) {
@@ -380,6 +415,10 @@ struct ContentView: View {
             if let progress = store.transfer.progress {
                 TransferOverlay(transfer: store.transfer, progress: progress)
             }
+        }
+        .sheet(isPresented: $exporter.isPresented) {
+            ExportSheet(exporter: exporter)
+                .environmentObject(settings)
         }
         .onChange(of: settings.settingsRequest) { _ in
             // Settings… from the menu bar opens the flyout on the same tab the
@@ -944,7 +983,7 @@ struct InspectorDrawer: View {
     private var effectsTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                crossfadeSection
+                CrossfadeSection(player: store.player)
 
                 Divider().overlay(settings.palette.divider)
 
@@ -974,49 +1013,59 @@ struct InspectorDrawer: View {
     /// Crossfade / gapless control (#14). A second engine is started just
     /// before the outgoing track ends; the choice below sets how long the two
     /// overlap. "Off" keeps the classic stop-then-start behaviour.
-    private var crossfadeSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(settings.t("xfTitle"))
-                    .font(settings.scaled(13).weight(.medium))
-                Spacer()
-                Text(settings.t(store.player.crossfade.titleKey))
-                    .font(settings.systemMono(10))
-                    .foregroundStyle(.secondary)
-            }
-            Text(settings.t("xfHint"))
-                .font(settings.scaled(10))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                crossfadeRow([CrossfadeOption.off, CrossfadeOption.gapless, CrossfadeOption.three])
-        }
-    }
+    ///
+    /// This is its own view with an @ObservedObject on the player: the
+    /// selection lives on PlayerState (not CommanderStore, which the parent
+    /// observes), so without this the row would not refresh on a click until
+    /// something else forced a re-render.
+    private struct CrossfadeSection: View {
+        @ObservedObject var player: PlayerState
+        @EnvironmentObject private var settings: AppSettings
 
-    private func crossfadeRow(_ options: [CrossfadeOption]) -> some View {
-        HStack(spacing: 4) {
-            ForEach(Array(options)) { opt in
-                let selected = store.player.crossfade == opt
-                Button {
-                    store.player.crossfade = opt
-                } label: {
-                    Text(settings.t(opt.titleKey))
-                        .font(settings.scaled(11))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 5)
-                        .background(
-                            RoundedRectangle(cornerRadius: 5)
-                                .fill(selected ? settings.palette.accent.opacity(0.22)
-                                               : settings.palette.cardOpacityFill))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 5)
-                                .stroke(selected ? settings.palette.accent
-                                                 : settings.palette.divider,
-                                        lineWidth: selected ? 1.5 : 1))
-                        .foregroundStyle(selected ? settings.palette.accent : Color.secondary)
+        var body: some View {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(settings.t("xfTitle"))
+                        .font(settings.scaled(13).weight(.medium))
+                    Spacer()
+                    Text(settings.t(player.crossfade.titleKey))
+                        .font(settings.systemMono(10))
+                        .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
+                Text(settings.t("xfHint"))
+                    .font(settings.scaled(10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                row([CrossfadeOption.off, CrossfadeOption.gapless, CrossfadeOption.three])
+            }
+        }
+
+        private func row(_ options: [CrossfadeOption]) -> some View {
+            HStack(spacing: 4) {
+                ForEach(Array(options)) { opt in
+                    let selected = player.crossfade == opt
+                    Button {
+                        player.crossfade = opt
+                    } label: {
+                        Text(settings.t(opt.titleKey))
+                            .font(settings.scaled(11))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 5)
+                            .background(
+                                RoundedRectangle(cornerRadius: 5)
+                                    .fill(selected ? settings.palette.accent.opacity(0.22)
+                                                   : settings.palette.cardOpacityFill))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 5)
+                                    .stroke(selected ? settings.palette.accent
+                                                     : settings.palette.divider,
+                                            lineWidth: selected ? 1.5 : 1))
+                            .foregroundStyle(selected ? settings.palette.accent : Color.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
     }
@@ -1438,11 +1487,7 @@ struct TransferOverlay: View {
 struct SettingsPanel: View {
     @EnvironmentObject var settings: AppSettings
     @ObservedObject private var store = CommanderStore.shared
-    @State private var showSkinImporter = false
-    @State private var skinImportFailed = false
-
-    private static let sknType: UTType =
-        UTType(filenameExtension: "skn", conformingTo: .data) ?? .data
+    @ObservedObject private var midi = MIDIBankStore.shared
 
     private var versionText: String {
         let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
@@ -1518,8 +1563,6 @@ struct SettingsPanel: View {
                     }
                 }
 
-                skinsSection
-
                 VStack(alignment: .leading, spacing: 6) {
                     Text(settings.t("languageLabel"))
                         .font(settings.scaled(13))
@@ -1564,85 +1607,94 @@ struct SettingsPanel: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
+                Divider()
+
+                MIDISection(midi: midi)
+
             }
         }
         .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .fileImporter(isPresented: $showSkinImporter,
-                      allowedContentTypes: [Self.sknType]) { result in
-            guard case .success(let url) = result else { return }
-            let scoped = url.startAccessingSecurityScopedResource()
-            let ok = settings.importSkin(from: url)
-            if scoped { url.stopAccessingSecurityScopedResource() }
-            skinImportFailed = !ok
+    }
+}
+
+// MARK: - MIDI sound bank / instrument (#23)
+
+/// SoundFont (.sf2) / DLS (.dls) bank picker plus a General MIDI instrument,
+/// used by the .mid/.rmi engines. Kept in Settings alongside the format lists
+/// because it configures the synth rather than the current track.
+private struct MIDISection: View {
+    @ObservedObject var midi: MIDIBankStore
+    @EnvironmentObject var settings: AppSettings
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(settings.t("midiBankTitle"))
+                .font(settings.scaled(13))
+
+            HStack(spacing: 6) {
+                Text(midi.isSystemBank
+                     ? settings.t("midiBankSystem")
+                     : (midi.customBankURL?.lastPathComponent ?? settings.t("midiBankSystem")))
+                    .font(settings.scaled(11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Button(settings.t("midiChooseBank")) { chooseBank() }
+                    .font(settings.scaled(11))
+                if !midi.isSystemBank {
+                    Button(settings.t("midiResetBank")) { midi.resetBank() }
+                        .font(settings.scaled(11))
+                }
+            }
+
+            Picker(settings.t("midiInstrument"), selection: $midi.program) {
+                ForEach(0..<MIDIBankCore.gmInstruments.count, id: \.self) { p in
+                    Text(MIDIBankCore.programLabel(p)).tag(p)
+                }
+            }
+            .pickerStyle(.menu)
+            .font(settings.scaled(12))
+
+            Toggle(settings.t("midiOverride"), isOn: $midi.overrideInstrument)
+                .toggleStyle(.switch)
+                .font(settings.scaled(12))
+
+            Text(settings.t("midiHint"))
+                .font(settings.scaled(10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    // MARK: Skins (.skn import from the Linux spec)
-
-    @ViewBuilder
-    private var skinsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(settings.t("skinsLabel"))
-                    .font(settings.scaled(13))
-                Spacer()
-                Button {
-                    showSkinImporter = true
-                } label: {
-                    Label(settings.t("importSkin"), systemImage: "plus.circle")
-                        .labelStyle(.titleAndIcon)
-                        .font(settings.scaled(11).weight(.medium))
-                }
-                .buttonStyle(.borderless)
-            }
-
-            if settings.skins.isEmpty {
-                Text(settings.t("noSkins"))
-                    .font(settings.scaled(11))
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(settings.skins) { skin in
-                    HStack(spacing: 10) {
-                        Circle()
-                            .fill(LinearGradient(colors: [skin.palette.bgTop, skin.palette.bgBottom],
-                                                 startPoint: .topLeading, endPoint: .bottomTrailing))
-                            .frame(width: 20, height: 20)
-                            .overlay(
-                                Circle().stroke(
-                                    settings.selectedSkin == skin.name
-                                        ? skin.palette.accent
-                                        : Color.secondary.opacity(0.4),
-                                    lineWidth: settings.selectedSkin == skin.name ? 2 : 1))
-                        Text(skin.name)
-                            .font(settings.scaled(12))
-                        if settings.selectedSkin == skin.name {
-                            Image(systemName: "checkmark")
-                                .font(settings.scaled(10).weight(.bold))
-                                .foregroundStyle(skin.palette.accent)
-                        }
-                        Spacer()
-                        Button {
-                            settings.removeSkin(skin.name)
-                        } label: {
-                            Image(systemName: "trash")
-                                .font(settings.scaled(10))
-                                .foregroundStyle(.red)
-                        }
-                        .buttonStyle(.borderless)
-                        .help(settings.t("removeSkin"))
-                    }
-                    .contentShape(Rectangle())
-                    .onTapGesture { settings.selectedSkin = skin.name }
-                }
-            }
-
-            if skinImportFailed {
-                Text(settings.t("skinBad"))
-                    .font(settings.scaled(11).weight(.medium))
-                    .foregroundStyle(Color.orange)
-            }
+    private func chooseBank() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = ["sf2", "dls"].compactMap {
+            UTType(filenameExtension: $0)
         }
+        panel.message = settings.t("midiChooseBank")
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            guard let data = try? Data(contentsOf: url),
+                  MIDIBankCore.bankKind(of: data) != nil
+                    || MIDIBankCore.bankKind(forExtension: url.pathExtension) != nil
+            else {
+                storeBankError()
+                return
+            }
+            midi.setBank(url)
+        }
+    }
+
+    private func storeBankError() {
+        let alert = NSAlert()
+        alert.messageText = settings.t("midiBankTitle")
+        alert.informativeText = settings.t("midiBankBad")
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 }
 

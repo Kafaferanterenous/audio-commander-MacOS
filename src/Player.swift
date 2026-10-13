@@ -123,8 +123,9 @@ final class PlayerState: NSObject, ObservableObject {
     private var eSampler: AVAudioUnitSampler?
     private var eSequencer: AVAudioSequencer?
     private var midiEnded = false
-    private let gsBankURL = URL(fileURLWithPath:
-        "/System/Library/Components/CoreAudio.component/Contents/Resources/gs_instruments.dls")
+
+    /// #23 sound bank + default instrument, shared with the Settings panel.
+    let midiBank = MIDIBankStore.shared
 
     private var baseQueue: [FileItem] = []
     private var queue: [FileItem] = []
@@ -555,28 +556,57 @@ final class PlayerState: NSObject, ObservableObject {
         return true
     }
 
+    /// Engine D: AVMIDIPlayer (the proven primary path). #23 lets it load the
+    /// chosen SoundFont/DLS bank and, when asked, injects the chosen GM program
+    /// into a file that names no instrument.
     private func startEngineD(url: URL) -> Bool {
-        var player: AVMIDIPlayer?
-        if let p = try? AVMIDIPlayer(contentsOf: url, soundBankURL: nil) {
-            player = p
-        } else if url.pathExtension.lowercased() == "rmi",
-                  let data = try? Data(contentsOf: url),
-                  let smf = AudioFormats.unwrapRMID(data),
-                  let p = try? AVMIDIPlayer(data: smf, soundBankURL: nil) {
-            player = p
-        }
-        if let player {
-            midiPlayer = player
-            midiPausedPosition = nil
-            let d = player.duration
-            if d.isFinite, d > 0 { duration = d }
-            player.prepareToPlay()
-            player.play { [weak self] in
-                Task { @MainActor [weak self] in self?.midiFinished(player) }
+        let customBank = midiBank.customBankURL
+
+        // Fast path (unchanged): a file opened straight from disk, when the
+        // listener has not chosen a custom bank or an instrument override.
+        if customBank == nil, !midiBank.overrideInstrument {
+            if let p = try? AVMIDIPlayer(contentsOf: url, soundBankURL: nil) {
+                return beginMIDIPlayer(p)
             }
-            return true
+        }
+
+        // Data path: .rmi must be unwrapped, and a custom bank or the override
+        // needs the SMF in memory.
+        guard let raw = try? Data(contentsOf: url) else {
+            if let p = try? AVMIDIPlayer(contentsOf: url, soundBankURL: customBank) {
+                return beginMIDIPlayer(p)
+            }
+            return startEngineE(url: url)
+        }
+        let isRMI = url.pathExtension.lowercased() == "rmi"
+        guard var smf = isRMI ? AudioFormats.unwrapRMID(raw) : raw else {
+            return startEngineE(url: url)
+        }
+        if midiBank.overrideInstrument,
+           MIDIBankCore.smfHasProgramChange(smf) == false,
+           let injected = MIDIBankCore.smfInjectingProgramChange(smf, program: midiBank.program) {
+            smf = injected
+        }
+        if let p = try? AVMIDIPlayer(data: smf, soundBankURL: customBank) {
+            return beginMIDIPlayer(p)
+        }
+        if customBank != nil,
+           let p = try? AVMIDIPlayer(data: smf, soundBankURL: nil) {
+            return beginMIDIPlayer(p)
         }
         return startEngineE(url: url)
+    }
+
+    private func beginMIDIPlayer(_ player: AVMIDIPlayer) -> Bool {
+        midiPlayer = player
+        midiPausedPosition = nil
+        let d = player.duration
+        if d.isFinite, d > 0 { duration = d }
+        player.prepareToPlay()
+        player.play { [weak self] in
+            Task { @MainActor [weak self] in self?.midiFinished(player) }
+        }
+        return true
     }
 
     private func startEngineE(url: URL) -> Bool {
@@ -590,12 +620,27 @@ final class PlayerState: NSObject, ObservableObject {
         } else {
             return false
         }
-        guard FileManager.default.fileExists(atPath: gsBankURL.path) else { return false }
+        let customBank = midiBank.customBankURL
+        let bankURL = customBank ?? midiBank.systemBankURL
+        guard FileManager.default.fileExists(atPath: bankURL.path) else { return false }
 
         let sampler = AVAudioUnitSampler()
         do {
-            try sampler.loadSoundBankInstrument(at: gsBankURL, program: 0,
-                                                bankMSB: 0x79, bankLSB: 0)
+            if customBank != nil {
+                // A user SoundFont/DLS: preset in the melodic bank 0.
+                try sampler.loadSoundBankInstrument(
+                    at: bankURL,
+                    program: UInt8(MIDIBankCore.clampProgram(midiBank.program)),
+                    bankMSB: 0, bankLSB: 0)
+            } else {
+                // System GS DLS synth: the GS bank select is 0x79/0x00. The
+                // override, when on, picks the program for an instrument-less
+                // file (the sequencer still lets a file's own changes win).
+                let prog = midiBank.overrideInstrument
+                    ? UInt8(MIDIBankCore.clampProgram(midiBank.program)) : 0
+                try sampler.loadSoundBankInstrument(at: bankURL, program: prog,
+                                                    bankMSB: 0x79, bankLSB: 0)
+            }
         } catch {
             return false
         }
