@@ -1583,3 +1583,8 @@ b33 — GOAL #17: 10-BAND EQ (Effects tab)  [DONE, built without verification]
   seek mid-file; duration shown matches; and note WMA is NOT bit-exact to any
   reference decoder (the crate lists black-box-fitted rows + unvalidated v1), so
   treat as straightforward rather than reference-grade.
+
+2026-10-21 — README screenshot (standing requirement)
+- Added docs/screenshot.png = user's real window capture of AudioCommander (dark
+  theme: library sidebar, waveform + spectrum panes, transport bar; 1259x798).
+  README embeds it under the title. Source: "Screenshot 2026-10-21 at 3.08.07 PM.png".

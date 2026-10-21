@@ -4,6 +4,8 @@ Dual-pane macOS audio player — plays modern formats natively and decodes legac
 tracker and speech formats (S3M, XM, MOD, VOC, and more) via a Swift front-end
 linked against a vendored multi-format C decoder library.
 
+![AudioCommander — dual-pane library and player, with waveform and spectrum views](docs/screenshot.png)
+
 ## Releases
 
 Prebuilt universal binaries (x86_64 + arm64) are published on the
