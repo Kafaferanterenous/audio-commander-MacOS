@@ -13,6 +13,8 @@ CC="xcrun cc"
 SWIFTC="xcrun swiftc"
 CARGO="$(command -v cargo || echo "$HOME/.cargo/bin/cargo")"
 APE_CRATE="vendored/ape-rs/Cargo.toml"
+DTS_CRATE="vendored/dts/Cargo.toml"
+WMA_CRATE="vendored/wma/Cargo.toml"
 # HAVE_CONFIG_H: libFLAC's sources only pick up our hand-written config.h with it.
 # HAVE_LROUND is handled inside that config.h (share/compat.h would otherwise
 # declare its own static lround and collide with <math.h>).
@@ -49,11 +51,19 @@ for ARCH in x86_64 arm64; do
     "$CARGO" build --release --offline --manifest-path "$APE_CRATE" \
         --target "$RUST_TARGET" --target-dir "$BUILD/$ARCH/cargo"
     APE_LIB="$BUILD/$ARCH/cargo/$RUST_TARGET/release/libape_rs.a"
+    # DTS Core decoder (pure-Rust oxideav-dts, MIT)
+    "$CARGO" build --release --offline --no-default-features --manifest-path "$DTS_CRATE" \
+        --target "$RUST_TARGET" --target-dir "$BUILD/$ARCH/cargo"
+    DTS_LIB="$BUILD/$ARCH/cargo/$RUST_TARGET/release/liboxideav_dts.a"
+    # WMA v1/v2 decoder (pure-Rust oxideav-wma, MIT)
+    "$CARGO" build --release --offline --no-default-features --manifest-path "$WMA_CRATE" \
+        --target "$RUST_TARGET" --target-dir "$BUILD/$ARCH/cargo"
+    WMA_LIB="$BUILD/$ARCH/cargo/$RUST_TARGET/release/liboxideav_wma.a"
 
     $SWIFTC -O -parse-as-library -target ${ARCH}-apple-macos13.0 \
         -import-objc-header src/Bridge.h \
         src/*.swift -o "$BUILD/$ARCH/${APP_NAME}" \
-        -L"$BUILD/$ARCH" -ldecoders "$APE_LIB"
+        -L"$BUILD/$ARCH" -ldecoders "$APE_LIB" "$DTS_LIB" "$WMA_LIB"
 
     lipo -remove "$BUILD/$ARCH/libdecoders.a" 2>/dev/null >/dev/null || true
 done

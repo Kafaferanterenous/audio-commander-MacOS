@@ -1,9 +1,11 @@
 AudioCommander — Goal Backlog (merged formats + features)
-Created 2026-09-23. Status as of build 40 (v0.6.11, uncommitted;
+Created 2026-09-23. Status as of build 42 (v0.6.12, uncommitted;
 b32 = #21, b33 = #14 + #17, b34 = #19 + EQ fixes/presets + spectrum fix,
 b36 = #18 DSD, b38 = #26 Export/Convert, b39 = #22 APE + two UI fixes,
-b40 = #23 MIDI sound bank/instrument + program-change injection).
-23/26 goals complete (88%).
+b40 = #23 MIDI sound bank/instrument + program-change injection,
+b41 = #20 DTS Core decode via vendored pure-Rust oxideav-dts,
+b42 = #24 WMA v1/v2 decode via vendored pure-Rust oxideav-wma + ASF reader).
+25/26 goals complete (96%).
 (F) = format playback, (X) = app feature. Effort: lowest = easiest.
 
 DONE (b18..b22, shipped in v0.6.1):
@@ -47,10 +49,18 @@ DONE (b40):
                                      + General MIDI instrument + program-change
                                      injection for files that name none (b40)
 
-REMAINING (priority order):
-  20. (F) DTS                  65%   no small standalone decoder + no CoreAudio/AVF support
-  24. (F) WMA                  85%   FFmpeg-only decoder
-  25. (F) WMAPro               90%   even heavier
+DONE (b41):
+  20. (F) DTS                  65%   pure-Rust oxideav-dts (MIT) vendored as a
+                                      staticlib + C shim (b41); arrangement-aware
+                                      multichannel->stereo downmix, seek/EOF/probe
+
+DONE (b42):
+  24. (F) WMA                  85%   pure-Rust oxideav-wma (MIT) vendored as a
+                                      staticlib + C shim with a minimal ASF
+                                      container reader (b42); WMA v1/v2 to stereo
+
+ARCHIVED (not planned):
+  25. (F) WMAPro               90%   even heavier than WMA; no permissive decoder
 
 DONE detail for #15 (b30): vendored libFLAC + libogg (both BSD/Xiph, matches the
 project's permissive-only policy) under vendored/flac + vendored/ogg. New
@@ -65,7 +75,8 @@ PERMANENTLY PARKED / SKIPPED (revisit only on explicit request):
 - MIDI volume (needs sampler engine, stalls on real HW)
 - GM drums channel 10 (same)
 - WavPack DONE in b27 (#11), Ogg FLAC DONE in b30 (#15), DSD DONE in b36
-  (#18), APE DONE in b39 (#22). DTS/WMA/WMAPro still open via #20/#24/#25.
+  (#18), APE DONE in b39 (#22). DTS DONE in b41 (#20), WMA DONE in b42 (#24).
+  Only WMA Pro remains, ARCHIVED via #25.
 
 DONE detail for #16 (b31): Effects drawer tab with a 64-band log-spaced
 spectrum, peak-hold caps, dBFS readout and decade axis labels. Hand-rolled
@@ -125,6 +136,64 @@ links the shipping decoder and checks 589824 decoded frames bit-exact against an
 independent ffmpeg-derived reference (fixtures truncated from ape-rs's own
 test.ape to keep the repo small), plus exact-seek, overshoot-EOF, probe-duration
 and reject-truncated cases: 22/22.
+
+DONE detail for #20 (b41): DTS Core is decoded by a vendored pure-Rust library,
+oxideav-dts 0.0.2 (MIT, Mark Karpeles/OxideAV). The crate is built as a
+staticlib under --no-default-features (its optional oxideav-core registry dep is
+not vendored; the four registry integration tests are gated behind the
+"registry" feature via required-features so the offline no-default build is
+clean) and reached from the C decoders through a tiny extern "C" shim
+(vendored/dts/src/ffi.rs + dts_ffi.h). build.sh / build_tools.sh gained a
+per-arch cargo step and every C tool that links the decoder archive also links
+the resulting liboxideav_dts.a. New DEC_KIND_DTS in vendored/decoders/decoders.c
+sniffs the 4-byte DTS sync (raw BE/LE + 14-bit) and decodes the Core stream to
+interleaved int32 at native rate; the primaries arrive in transmission order
+with the LFE plane trailing, so an arrangement-aware multichannel->stereo downmix
+(AMODE Table 5-4: front L/R unity, centre/surround -3 dB, rear pairs -6 dB, LFE
+halved, AMODE 3 sum/difference decoded, AMODE 1 dual-mono and >15 user-defined
+fall back to the first two planes) runs before the shared pcm_to_stereo resampler
+(48 kHz -> 44.1 kHz), so DTS gets the same SEEK/END_OF_STREAM/duration behaviour
+as the other embedded decoders. "dts"/"dtshd" moved from the unsupported list to
+embeddedExtensions. tools/test_dts.c links the shipping decoder and checks five
+fixtures (plain stereo, D10, joint, termination, 5.1+LFE) against independent
+ffmpeg-derived references: the reconstructed waveform is shape-identical to the
+reference (Pearson correlation 1.000000 on every channel — the DTS output gain is
+implementation-defined, so comparison is scale-invariant, matching the crate's
+own black-box test), plus resampled length, native-rate read length, seek,
+overshoot-EOF, probe-duration and reject-truncated cases: 74/74.
+
+DONE detail for #24 (b42): WMA v1/v2 is decoded by a vendored pure-Rust library,
+oxideav-wma 0.0.4 (MIT, Mark Karpeles/OxideAV) — the only shippable path, since
+every existing WMA decoder (ffmpeg wmadec/wmaprodec, Rockbox libwma, ScummVM,
+Echo C#) is GPL/LGPL and cannot be shipped under the permissive-only policy. The
+crate covers the *codec payload only*, not the ASF container, and its own tests
+shell out to ffmpeg to unwrap ASF — so the real work was a minimal ASF reader in
+the C shim (vendored/wma/src/ffi.rs + wma_ffi.h), 702 lines, no external deps.
+It walks the ASF Header Object by object count (some files, e.g. streamed
+excerpts, carry a zero header-size field), finds the Data Object by GUID rather
+than assuming offset 0, reads the packet size from the File Properties Object,
+and reassembles each packet's single- or multi-payload body (spec §5.2.3.3:
+Payload Flags byte -> number-of-payloads + length-type, then per payload the
+stream/media-object numbers, offset, replicated-data length+data, and payload
+length+data) into `block_align` codec packets. Those feed the crate's direct
+codec path (StreamConfig -> PacketAssembler -> FrameParser -> BlockSynth),
+bypassing the oxideav-core registry entirely (the crate is vendored with no
+[dependencies]; only lib.rs + registration.rs touched core and registration was
+dropped). The shim hands back interleaved *stereo* int32 at native rate (mono
+duplicated), so DEC_KIND_WMA in decoders.c is a straight pcm_to_stereo resample —
+same SEEK/END_OF_STREAM/duration behaviour as the other embedded decoders.
+"wma"/"asf" moved from the unsupported list to embeddedExtensions.
+tools/test_wma.c links the shipping decoder over six real ASF/WMA fixtures
+(twins 1.4 s newscast excerpt, sample15 15 s, example 36 s — all stereo — plus
+three mono WMAv2 44.1 kHz files: 5 s, 15 s, 30 s from samplefile.com) and checks
+open, stereo 44100 output, duration vs. the header, decoded length, non-silence,
+peak in (0,1], sample-accurate seek, and mono->stereo duplication (L == R): 86/86.
+Validation is plausibility-based because no local ffmpeg exists to produce
+reference PCM; peak/RMS/length and
+non-clipping counts are all consistent with real content. NOTE: WMA is not
+bit-exact to any reference decoder — the crate itself lists black-box-fitted
+rows and unvalidated WMA v1, so this is a straightforward (not reference-grade)
+implementation.
 
 DONE detail for b39 UI fixes: the crossfade/gapless buttons in the Effects tab
 are now their own view holding an @ObservedObject on PlayerState (the selection
@@ -189,6 +258,10 @@ UI / DRAWER DESIGN (agreed 2026-09-23, clean-UX principle):
   timer, Effects awaits #16/#17/#19).
 
 OTHER OPEN ITEMS:
+- NEXT GITHUB UPDATE: add a screenshot of the running app (main dual-pane
+  window, ideally with the Inspector drawer open showing Effects tab) to the
+  GitHub README + release notes. Capture on this Mac after a build/launch;
+  commit under e.g. docs/screenshot.png and link from README.
 - Verify 0.6.1 (b22) on the real Mac (MIDI/tracker OK at 0.6; eyes on
   window persistence + sleep timer + ADPCM voc).
 - Verify b23 AC3/EAC3 on the real Mac: a .ac3 and a .eac3/.ec3 file list with

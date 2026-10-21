@@ -13,6 +13,8 @@
 #include "FLAC/stream_encoder.h"
 #include "dsddec.c"
 #include "ape_ffi.h"
+#include "dts_ffi.h"
+#include "wma_ffi.h"
 
 #define OUT_RATE 44100
 /* DUMB delta_time = 65536 (units/sec) / output rate: fixed-point seconds per
@@ -29,7 +31,9 @@ enum dec_kind {
     DEC_KIND_WAVPACK,
     DEC_KIND_OGGFLAC,
     DEC_KIND_DSD,
-    DEC_KIND_APE
+    DEC_KIND_APE,
+    DEC_KIND_DTS,
+    DEC_KIND_WMA
 };
 
 struct dec_decoder {
@@ -92,6 +96,26 @@ struct dec_decoder {
     long ape_buf_cap;
     long ape_buf_frames;   /* frames currently valid in ape_buf */
     long ape_buf_used;     /* frames already consumed from ape_buf */
+
+    /* DTS decoder (pure-Rust oxideav-dts, MIT) through the C shim in
+     * dts_ffi.h. */
+    void *dts;
+    dts_info_t dts_info_cache;
+    int32_t *dts_buf;      /* interleaved int32 scratch, dts_buf_cap frames */
+    long dts_buf_cap;
+    long dts_buf_frames;
+    long dts_buf_used;
+
+    /* WMA decoder (pure-Rust oxideav-wma, MIT) through the C shim in
+     * wma_ffi.h. The shim returns interleaved *stereo* int32 at the
+     * native rate (mono duplicated), so fill is a straight
+     * pcm_to_stereo resample. */
+    void *wma;
+    wma_info_t wma_info_cache;
+    int32_t *wma_buf;      /* interleaved stereo int32, wma_buf_cap frames */
+    long wma_buf_cap;
+    long wma_buf_frames;
+    long wma_buf_used;
 };
 
 /* ------------------------------------------------------------------ */
@@ -705,8 +729,191 @@ static long ape_fill(dec_decoder *d, float *out, long frames) {
     return filled;
 }
 
+
+
 /* ------------------------------------------------------------------ */
-/* Ogg FLAC (libFLAC + libogg, BSD/Xiph - vendored under vendored/flac, */
+/* DTS (pure-Rust oxideav-dts, MIT) through dts_ffi.h                  */
+/* ------------------------------------------------------------------ */
+
+static int dts_open_dec(dec_decoder *d) {
+    void *h = dts_open(d->data, (size_t)d->size);
+    if (!h) return 0;
+    dts_info_t info;
+    if (dts_info(h, &info) != 1 || info.channels < 1) {
+        dts_close(h);
+        return 0;
+    }
+    /* Our C downmix expects 1-8 primary planes + optional trailing LFE. */
+    long cap = 4096;
+    int32_t *buf = (int32_t *)malloc((size_t)cap * (size_t)(info.channels + info.has_lfe) * sizeof(int32_t));
+    if (!buf) { dts_close(h); return 0; }
+    d->kind = DEC_KIND_DTS;
+    d->dts = h;
+    d->dts_info_cache = info;
+    d->dts_buf = buf;
+    d->dts_buf_cap = cap;
+    d->dts_buf_frames = 0;
+    d->dts_buf_used = 0;
+    d->duration = (info.total_samples > 0 && info.sample_rate > 0)
+        ? ((double)info.total_samples / (double)info.sample_rate) : 0.0;
+    return 1;
+}
+
+/* DTS multichannel downmix to stereo, then feed pcm_to_stereo for resampling
+ * and format conversion. The crate returns interleaved int32 at native rate:
+ * (channels + has_lfe) samples per frame, the primary planes in DTS
+ * transmission order (ETSI TS 102 114 Table 5-4), the LFE plane trailing when
+ * has_lfe==1. The AMODE header field names the arrangement, so the downmix
+ * knows which transmission slot is centre / surround / etc.
+ *
+ * The front L/R pair is taken at unity gain; centre and surrounds are folded in
+ * at -3 dB (0.707, the standard downmix coefficient); LFE is halved. AMODE 3
+ * (sum/difference) is decoded to L = (L+R) + (L-R), R = (L+R) - (L-R). AMODE
+ * 1 (dual mono) and >15 (user-defined) fall back to the first two planes. */
+static void dts_downmix_frame(const int32_t *p, unsigned amode, int prim,
+                              int has_lfe, double *outL, double *outR) {
+    double lv = 0, rv = 0, cv = 0, sv = 0, slv = 0, srv = 0;
+    double clv = 0, crv = 0, lrr = 0, rrr = 0, ov = 0, cfv = 0, crfv = 0, lfv = 0, rfv = 0;
+    switch (amode) {
+    case 2: case 4:                          /* L R ; LT RT */
+        lv = p[0]; rv = p[1]; break;
+    case 3: {                                /* (L+R) (L-R) */
+        double sum = p[0], dif = p[1];
+        lv = 0.5 * (sum + dif); rv = 0.5 * (sum - dif); break;
+    }
+    case 5:  cv = p[0]; lv = p[1]; rv = p[2]; break;             /* C L R */
+    case 6:  lv = p[0]; rv = p[1]; sv = p[2]; break;             /* L R S */
+    case 7:  cv = p[0]; lv = p[1]; rv = p[2]; sv = p[3]; break;  /* C L R S */
+    case 8:  lv = p[0]; rv = p[1]; slv = p[2]; srv = p[3]; break; /* L R SL SR */
+    case 9:  cv = p[0]; lv = p[1]; rv = p[2]; slv = p[3]; srv = p[4]; break;
+    case 10: clv = p[0]; crv = p[1]; lv = p[2]; rv = p[3]; slv = p[4]; srv = p[5]; break;
+    case 11: cv = p[0]; lv = p[1]; rv = p[2]; lrr = p[3]; rrr = p[4]; ov = p[5]; break;
+    case 12: cfv = p[0]; crfv = p[1]; lfv = p[2]; rfv = p[3]; lrr = p[4]; rrr = p[5]; break;
+    case 13: clv = p[0]; cv = p[1]; crv = p[2]; lv = p[3]; rv = p[4]; slv = p[5]; srv = p[6]; break;
+    case 14: clv = p[0]; crv = p[1]; lv = p[2]; rv = p[3]; slv = p[4]; srv = p[6]; break;
+    case 15: clv = p[0]; cv = p[1]; crv = p[2]; lv = p[3]; rv = p[4]; slv = p[5]; sv = p[6]; srv = p[7]; break;
+    default: /* 0 (mono) / 1 (dual mono) / 16..63 (user-defined) */
+        lv = prim >= 1 ? p[0] : 0; rv = prim >= 2 ? p[1] : lv; break;
+    }
+    /* Fold centre, surrounds and the various front/rear pairs at -3 dB / -6 dB. */
+    lv += 0.707 * cv + 0.5 * clv + 0.5 * cfv + 0.5 * lfv;
+    rv += 0.707 * cv + 0.5 * crv + 0.5 * crfv + 0.5 * rfv;
+    lv += 0.707 * slv + 0.707 * sv + 0.5 * lrr;
+    rv += 0.707 * srv + 0.707 * sv + 0.5 * rrr;
+    lv += 0.3 * ov; rv += 0.3 * ov;
+    if (has_lfe) { double lfe = 0.5 * p[prim]; lv += lfe; rv += lfe; }
+    *outL = lv; *outR = rv;
+}
+
+static long dts_fill(dec_decoder *d, float *out, long frames) {
+    dts_info_t *info = &d->dts_info_cache;
+    int prim = (int)info->channels;
+    int has_lfe = (int)info->has_lfe;
+    int nch_in = prim + has_lfe;
+    unsigned int rate_in = info->sample_rate ? info->sample_rate : 48000;
+    long filled = 0;
+    double scale_in = 1.0 / 2147483648.0;
+
+    while (filled < frames) {
+        if (d->dts_buf_used >= d->dts_buf_frames) {
+            long want = frames - filled;
+            if (want > d->dts_buf_cap) want = d->dts_buf_cap;
+            int64_t got = dts_read(d->dts, d->dts_buf, (int64_t)want);
+            if (got <= 0) break;
+            d->dts_buf_frames = (long)got;
+            d->dts_buf_used = 0;
+        }
+        long have = d->dts_buf_frames - d->dts_buf_used;
+        if (prim <= 0) break;
+
+        /* Mono and stereo (including LT/RT and the first two planes in general)
+         * need no downmix: hand them straight to the shared stereo converter. */
+        if (prim <= 2) {
+            long used = pcm_to_stereo(d, d->dts_buf + d->dts_buf_used * nch_in,
+                                      nch_in, 0, scale_in, rate_in, have,
+                                      out, frames, &filled);
+            if (used <= 0) break;
+            d->dts_buf_used += used;
+            continue;
+        }
+
+        /* Multi-channel: arrangement-aware downmix, then resample the stereo. */
+        long chunk = have;
+        if (chunk > 256) chunk = 256;
+        int32_t tmp2[512 * 2];
+        for (long f = 0; f < chunk; f++) {
+            const int32_t *p = d->dts_buf + (d->dts_buf_used + f) * nch_in;
+            double Lv, Rv;
+            dts_downmix_frame(p, info->amode, prim, has_lfe, &Lv, &Rv);
+            if (Lv > 2147483647.0) Lv = 2147483647.0;
+            if (Lv < -2147483648.0) Lv = -2147483648.0;
+            if (Rv > 2147483647.0) Rv = 2147483647.0;
+            if (Rv < -2147483648.0) Rv = -2147483648.0;
+            tmp2[f * 2 + 0] = (int32_t)Lv;
+            tmp2[f * 2 + 1] = (int32_t)Rv;
+        }
+        long used = pcm_to_stereo(d, tmp2, 2, 0, scale_in, rate_in, chunk,
+                                  out, frames, &filled);
+        if (used <= 0) break;
+        d->dts_buf_used += used;
+    }
+    return filled;
+}
+
+/* ------------------------------------------------------------------ */
+/* WMA (pure-Rust oxideav-wma, MIT) through wma_ffi.h                  */
+/* ------------------------------------------------------------------ */
+
+static int wma_open_dec(dec_decoder *d) {
+    void *h = wma_open(d->data, (size_t)d->size);
+    if (!h) return 0;
+    wma_info_t info;
+    if (wma_info(h, &info) != 1 || info.channels < 1) {
+        wma_close(h);
+        return 0;
+    }
+    /* The shim hands back interleaved *stereo* int32 at the native rate. */
+    long cap = 4096;
+    int32_t *buf = (int32_t *)malloc((size_t)cap * 2 * sizeof(int32_t));
+    if (!buf) { wma_close(h); return 0; }
+    d->kind = DEC_KIND_WMA;
+    d->wma = h;
+    d->wma_info_cache = info;
+    d->wma_buf = buf;
+    d->wma_buf_cap = cap;
+    d->wma_buf_frames = 0;
+    d->wma_buf_used = 0;
+    d->duration = (info.total_samples > 0 && info.sample_rate > 0)
+        ? ((double)info.total_samples / (double)info.sample_rate) : 0.0;
+    return 1;
+}
+
+static long wma_fill(dec_decoder *d, float *out, long frames) {
+    wma_info_t *info = &d->wma_info_cache;
+    unsigned int rate_in = info->sample_rate ? info->sample_rate : 44100;
+    long filled = 0;
+    double scale_in = 1.0 / 2147483648.0;
+
+    while (filled < frames) {
+        if (d->wma_buf_used >= d->wma_buf_frames) {
+            long want = frames - filled;
+            if (want > d->wma_buf_cap) want = d->wma_buf_cap;
+            int64_t got = wma_read(d->wma, d->wma_buf, (int64_t)want);
+            if (got <= 0) break;
+            d->wma_buf_frames = (long)got;
+            d->wma_buf_used = 0;
+        }
+        long have = d->wma_buf_frames - d->wma_buf_used;
+        long used = pcm_to_stereo(d, d->wma_buf + d->wma_buf_used * 2,
+                                  2, 0, scale_in, rate_in, have,
+                                  out, frames, &filled);
+        if (used <= 0) break;
+        d->wma_buf_used += used;
+    }
+    return filled;
+}
+
+/* ------------------------------------------------------------------ */
 /* vendored/ogg). libFLAC owns the Ogg framing, so only the raw file     */
 /* bytes are exposed to it as a read-only memory stream.                  */
 /* ------------------------------------------------------------------ */
@@ -1024,6 +1231,22 @@ void *dec_open(const void *data, size_t size) {
         return NULL;
     }
 
+    /* DTS Core: attempt to sniff a parseable DTS frame header */
+    if (size >= 10 && dts_sniff(bytes, size)) {
+        if (dts_open_dec(d)) return d;
+        free(d->data);
+        free(d);
+        return NULL;
+    }
+
+    /* WMA: an ASF container carrying a WMA v1/v2 audio stream */
+    if (size >= 64 && wma_sniff(bytes, size)) {
+        if (wma_open_dec(d)) return d;
+        free(d->data);
+        free(d);
+        return NULL;
+    }
+
     /* DSD: DSF (Sony) or DFF (Philips) */
     if (dsd_is_dsf(bytes, size) || dsd_is_dff(bytes, size)) {
         d->dsd = dsd_open(bytes, size);
@@ -1086,6 +1309,14 @@ void dec_close(void *vd) {
             if (d->ape) ape_close(d->ape);
             free(d->ape_buf);
             break;
+        case DEC_KIND_DTS:
+            if (d->dts) dts_close(d->dts);
+            free(d->dts_buf);
+            break;
+        case DEC_KIND_WMA:
+            if (d->wma) wma_close(d->wma);
+            free(d->wma_buf);
+            break;
         default:
             break;
     }
@@ -1147,6 +1378,12 @@ long dec_render(void *vd, float *out, long frames) {
             break;
         case DEC_KIND_APE:
             produced = ape_fill(d, out, frames);
+            break;
+        case DEC_KIND_DTS:
+            produced = dts_fill(d, out, frames);
+            break;
+        case DEC_KIND_WMA:
+            produced = wma_fill(d, out, frames);
             break;
         default:
             return 0;
@@ -1243,6 +1480,30 @@ int dec_seek(void *vd, double seconds) {
             if (!ape_seek(d->ape, sample)) return 0;
             d->ape_buf_frames = 0;
             d->ape_buf_used = 0;
+            d->res_frac = 0;
+            d->res_has_prev = 0;
+            d->pos_frames = (long)(seconds * (double)OUT_RATE);
+            return 1;
+        }
+        case DEC_KIND_DTS: {
+            if (!d->dts) return 0;
+            if (seconds < 0) seconds = 0;
+            uint64_t sample = (uint64_t)(seconds * (double)d->dts_info_cache.sample_rate + 0.5);
+            if (!dts_seek(d->dts, sample)) return 0;
+            d->dts_buf_frames = 0;
+            d->dts_buf_used = 0;
+            d->res_frac = 0;
+            d->res_has_prev = 0;
+            d->pos_frames = (long)(seconds * (double)OUT_RATE);
+            return 1;
+        }
+        case DEC_KIND_WMA: {
+            if (!d->wma) return 0;
+            if (seconds < 0) seconds = 0;
+            uint64_t sample = (uint64_t)(seconds * (double)d->wma_info_cache.sample_rate + 0.5);
+            if (!wma_seek(d->wma, sample)) return 0;
+            d->wma_buf_frames = 0;
+            d->wma_buf_used = 0;
             d->res_frac = 0;
             d->res_has_prev = 0;
             d->pos_frames = (long)(seconds * (double)OUT_RATE);

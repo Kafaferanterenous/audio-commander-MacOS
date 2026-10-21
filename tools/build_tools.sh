@@ -49,14 +49,28 @@ CARGO="$(command -v cargo || echo "$HOME/.cargo/bin/cargo")"
 "$CARGO" build --release --offline --manifest-path vendored/ape-rs/Cargo.toml \
     --target-dir "$OUT/cargo"
 APE_LIB="$OUT/cargo/release/libape_rs.a"
+"$CARGO" build --release --offline --no-default-features --manifest-path vendored/dts/Cargo.toml \
+    --target-dir "$OUT/cargo"
+DTS_LIB="$OUT/cargo/release/liboxideav_dts.a"
+"$CARGO" build --release --offline --no-default-features --manifest-path vendored/wma/Cargo.toml \
+    --target-dir "$OUT/cargo"
+WMA_LIB="$OUT/cargo/release/liboxideav_wma.a"
 
-xcrun cc $CFLAGS tools/flacgen.c -o "$OUT/flacgen$SUF" "$LIB" "$APE_LIB" -lm
-xcrun cc $CFLAGS tools/test_oggflac.c -o "$OUT/test_oggflac$SUF" "$LIB" "$APE_LIB" -lm
-xcrun cc $CFLAGS tools/test_decoders.c -o "$OUT/test_decoders$SUF" "$LIB" "$APE_LIB" -lm
+xcrun cc $CFLAGS tools/flacgen.c -o "$OUT/flacgen$SUF" "$LIB" "$APE_LIB" "$DTS_LIB" "$WMA_LIB" -lm
+xcrun cc $CFLAGS tools/test_oggflac.c -o "$OUT/test_oggflac$SUF" "$LIB" "$APE_LIB" "$DTS_LIB" "$WMA_LIB" -lm
+xcrun cc $CFLAGS tools/test_decoders.c -o "$OUT/test_decoders$SUF" "$LIB" "$APE_LIB" "$DTS_LIB" "$WMA_LIB" -lm
 
 # APE integration harness (#22): links the same decoder archive (and its Rust
 # APE shim) and checks the decoded PCM against the ffmpeg-derived reference.
-xcrun cc $CFLAGS tools/test_ape.c -o "$OUT/test_ape$SUF" "$LIB" "$APE_LIB" -lm
+xcrun cc $CFLAGS tools/test_ape.c -o "$OUT/test_ape$SUF" "$LIB" "$APE_LIB" "$DTS_LIB" "$WMA_LIB" -lm
+
+# DTS integration harness (#20): links the decoder archive + its Rust DTS shim
+# and checks the decoded PCM against the ffmpeg-derived reference.
+xcrun cc $CFLAGS tools/test_dts.c -o "$OUT/test_dts$SUF" "$LIB" "$APE_LIB" "$DTS_LIB" "$WMA_LIB" -lm
+
+# WMA integration harness (#24): links the decoder archive + its Rust WMA shim
+# and checks the decoded PCM for length/level/seek plausibility.
+xcrun cc $CFLAGS tools/test_wma.c -o "$OUT/test_wma$SUF" "$LIB" "$APE_LIB" "$DTS_LIB" "$WMA_LIB" -lm
 
 # Spectrum harness (#16): compiles the production src/Spectrum.swift alongside
 # the test, so the FFT and band mapping under test are literally the shipping
@@ -89,6 +103,6 @@ xcrun swiftc -O -o "$OUT/test_midibank$SUF" src/MIDIBank.swift tools/test_midiba
 # The header bridge gives the Swift test the C prototypes; the result is then
 # handed to the independent system `flac` CLI for a real decode.
 xcrun swiftc -O -import-objc-header src/Bridge.h -o "$OUT/test_export$SUF" \
-    src/ExportCore.swift tools/test_export/main.swift "$LIB" "$APE_LIB" -lm
+    src/ExportCore.swift tools/test_export/main.swift "$LIB" "$APE_LIB" "$DTS_LIB" "$WMA_LIB" -lm
 
-echo "--- tools built: $OUT (flacgen$SUF, test_oggflac$SUF, test_decoders$SUF, test_ape$SUF, test_spectrum$SUF, test_id3$SUF, test_crossfade$SUF, test_equalizer$SUF, test_replaygain$SUF, test_midibank$SUF, test_export$SUF) ---"
+echo "--- tools built: $OUT (flacgen$SUF, test_oggflac$SUF, test_decoders$SUF, test_ape$SUF, test_dts$SUF, test_wma$SUF, test_spectrum$SUF, test_id3$SUF, test_crossfade$SUF, test_equalizer$SUF, test_replaygain$SUF, test_midibank$SUF, test_export$SUF) ---"

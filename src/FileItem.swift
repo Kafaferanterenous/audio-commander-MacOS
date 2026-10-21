@@ -24,7 +24,6 @@ enum AudioFormats {
     /// Audio formats the app recognizes but cannot decode yet.
     /// Kept out of `extensions` so they never show as playable.
     static let unsupportedExtensions: Set<String> = [
-        "wma"
     ]
     /// Formats handled by the embedded C decoders (DUMB + stb_vorbis + VOC + WavPack + libFLAC + DSD + APE).
     static let embeddedExtensions: Set<String> = [
@@ -33,7 +32,9 @@ enum AudioFormats {
         "669", "amf", "ams", "dsm", "far", "mtm", "okt", "psm", "ptm", "stm", "ult",
         "voc",
         "wv", "dsf", "dff",
-        "ape"
+"ape",
+        "dts", "dtshd",
+        "wma", "asf"
     ]
     /// MIDI (native AVMIDIPlayer with system sound bank).
     static let midiExtensions: Set<String> = ["mid", "midi", "rmi"]
@@ -179,7 +180,7 @@ enum AudioFormats {
         }
         return """
         Native (CoreAudio): \(spaced(nativeExtensions))
-        Vorbis / trackers / lossless (DUMB + stb + WavPack + libFLAC + APE): \(spaced(embeddedExtensions))
+        Vorbis / trackers / lossless (DUMB + stb + WavPack + libFLAC + APE + DTS + WMA): \(spaced(embeddedExtensions))
         MIDI: \(spaced(midiExtensions))
         """
     }()
@@ -187,7 +188,7 @@ enum AudioFormats {
     /// Human-readable line for the Settings sheet: formats recognized by the
     /// app or ecosystem but not decoded yet, and which could be added.
     static let nonImplementedFormatsText: String =
-        "WMA (Windows Media), DTS"
+        "WMA Pro / Lossless (Windows Media)"
 
     enum Route { case native, embedded, midi }
 

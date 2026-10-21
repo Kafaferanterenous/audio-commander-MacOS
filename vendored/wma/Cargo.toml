@@ -1,0 +1,36 @@
+[package]
+edition = "2021"
+rust-version = "1.80"
+name = "oxideav-wma"
+version = "0.0.4"
+authors = ["Mark Karpeles"]
+description = "Pure-Rust Windows Media Audio (WMA v1 + v2 baseline; later Pro + Lossless) decoder for oxideav"
+homepage = "https://github.com/OxideAV/oxideav-wma"
+readme = "README.md"
+keywords = [
+    "multimedia",
+    "audio",
+    "wma",
+    "codec",
+    "asf",
+]
+categories = [
+    "multimedia::encoding",
+    "multimedia::audio",
+]
+license = "MIT"
+repository = "https://github.com/OxideAV/oxideav-wma"
+
+# AudioCommander vendoring: the optional `oxideav-core` registry surface
+# (a crates.io dependency pulling serde_json/bytemuck/thiserror) is
+# deliberately NOT vendored — the app drives the codec directly through
+# src/ffi.rs, exactly like the vendored oxideav-dts crate. Build with
+# `cargo build --release --offline --no-default-features`.
+
+[lib]
+name = "oxideav_wma"
+path = "src/lib.rs"
+# Also emitted as a C static library so the vendored decoders.c can drive
+# it through the thin `ffi` module (see src/ffi.rs). The rlib keeps
+# `cargo test` working for the upstream unit tests.
+crate-type = ["staticlib", "rlib"]

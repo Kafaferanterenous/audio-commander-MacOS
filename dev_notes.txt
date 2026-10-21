@@ -1461,3 +1461,125 @@ b33 — GOAL #17: 10-BAND EQ (Effects tab)  [DONE, built without verification]
   own; the override toggle is idempotent on replay; fallback to the system
   synth when a bank is moved away. Engine E (sampler) remains the fragile
   fallback and is not the default.
+
+=== b41: #20 DTS Core decode (goal #20) ===
+- vendored/dts: oxideav-dts 0.0.2 (MIT, Mark Karpeles/OxideAV) copied from
+  crates.io. Cargo.toml: added [lib] name="oxideav_dts"
+  crate-type=["staticlib","rlib"]; dropped the optional [dependencies.oxideav-core]
+  (a crates.io dep we do not vendor) and turned the `registry` feature into a
+  no-op declaration with default=[] so the offline --no-default-features build
+  stays clean; the four registry integration tests (black_box_d10,
+  encoder_registry, registry_joint_decode, termination_decode) are gated behind
+  required-features=["registry"]. lib.rs: #![forbid(unsafe_code)] ->
+  #![deny(unsafe_code)] with a vendoring note, added `pub mod ffi;`. .gitignore
+  no longer lists Cargo.lock (so it commits). Removed .cargo_vcs_info.json and
+  .github.
+- vendored/dts/src/ffi.rs: extern "C" shim -> dts_sniff / dts_open / dts_info /
+  dts_seek / dts_read / dts_close. Outputs interleaved int32 at native rate:
+  (channels + has_lfe) samples/frame, primaries in DTS transmission order, LFE
+  plane trailing. Frame 0's decoded PCM is staged as the first readable frame;
+  seek restarts at the containing frame and skips the leading samples so it is
+  sample accurate; termination frames (short PSC) are handled. dts_open borrows
+  the caller buffer until dts_close (matches ape_open_file).
+- vendored/decoders/dts_ffi.h: C mirror of DtsInfoFfi + the six functions.
+- vendored/decoders/decoders.c: new DEC_KIND_DTS. dts_open_dec() opens + caches
+  info + allocates the int32 scratch. dts_fill() feeds mono/stereo straight to
+  pcm_to_stereo; for >2 planes it runs dts_downmix_frame() (AMODE Table 5-4
+  transmission order: front L/R unity, C/SL/SR -3 dB, CL/CR/CF/CRf/LF/RF/LR/RR
+  -6 dB, OV 0.3, LFE 0.5; AMODE 3 decodes (L+R)+-(L-R); AMODE 1, 0 and >15 fall
+  back to the first two planes), then resamples the stereo. Sniff + open gate in
+  dec_open() sits after the APE gate. dec_render/dec_seek/dec_close cases added.
+  NOTE: dts_info() returns 1 on success (not 0) — the open gate checks ==1.
+- build.sh + tools/build_tools.sh: per-arch `cargo build --release --offline
+  --no-default-features` for vendored/dts, and liboxideav_dts.a added to every
+  link line that already used libape_rs.a; new test_dts target + list entry.
+- src/FileItem.swift: "dts","dtshd" added to embeddedExtensions; playable
+  formats line now "... + APE + DTS"; dropped from nonImplementedFormatsText.
+- tools/fixtures/dts/: five fixtures (stereo, d10, joint, term, lfe51) + their
+  ffmpeg s32le references, copied from the crate's own tests/fixtures.
+- tools/test_dts.c: links the shipping decoder; checks resampled length
+  (ref x 44100/48000), native-rate read length, Pearson correlation vs the
+  ffmpeg reference (1.000000 on every channel — DTS output gain is
+  implementation-defined so the comparison is scale-invariant, matching the
+  crate's black-box test), seek, overshoot-EOF, probe-duration and
+  reject-truncated: 74/74. The "term" fixture's reference omits the short
+  termination frame, so there the reference is a length lower bound.
+- [x] Universal app rebuild (x86_64 + arm64) clean; tools build clean;
+  test_dts 74/74. NOT packaged / NOT committed yet.
+- OPEN (needs real Mac + ears): play a .dts/.dtshd and confirm pleasing stereo
+  output; a 5.1 file's downmix; seeking mid-file; the duration shown matches.
+- GITHUB TODO (user, recorded): on the next AudioCommander upload, add a
+  screenshot of the running app (dual-pane + Effects drawer) as docs/screenshot.png
+  and link it in README + release notes. Same applies to every uploaded project.
+
+=== b42: #24 WMA v1/v2 decode (goal #24) ===
+- Licensing: every existing WMA decoder is copyleft (ffmpeg wmadec.c/wmaprodec.c,
+  Rockbox libwma/libwmapro, ScummVM wma.cpp, Echo C#, yui0/slibs uwma.h) so none
+  can ship under the permissive-only policy. "Read the GPL source then write our
+  own" is also unsafe (clean-room needs an implementer who never saw the source).
+  Only shippable option: the MIT oxideav-wma 0.0.4.
+- vendored/wma: oxideav-wma 0.0.4 (MIT, Mark Karpeles/OxideAV) copied from
+  crates.io. The crate has NO [dependencies] once vendored (only lib.rs +
+  registration.rs touched oxideav-core, and registration.rs was dropped
+  entirely): removed src/registration.rs, the `pub mod registration;` +
+  `pub use registration::{...}` lines and the trailing oxideav_core::register!
+  macro; removed tests/encoder_streams.rs + tests/vendor_streams.rs (the vendor
+  reference streams live outside the crate and are not shipped) and the empty
+  tests/ dir; Cargo.toml rewritten with [lib] name="oxideav_wma"
+  crate-type=["staticlib","rlib"]; lib.rs: #![forbid(unsafe_code)] ->
+  #![deny(unsafe_code)] (+ note) and `pub mod ffi;`. Removed .cargo_vcs_info.json,
+  Cargo.toml.orig, .github, Cargo.lock. 46.7k LOC, 893 unit tests pass offline.
+- vendored/wma/src/ffi.rs (~702 lines, #![allow(unsafe_code)]): the crate covers
+  the codec payload only, not ASF, and its own tests shell out to ffmpeg to
+  unwrap ASF — so the shim carries a minimal ASF reader. Walks the Header Object
+  by object *count* (some files, e.g. streamed excerpts, set the header-size
+  field to 0), finds the Data Object by GUID search (it is not at offset 0),
+  reads the packet size from the File Properties Object (off+96 min-packet),
+  parses WaveFormatEx (codec tag 0x160/0x161), and reassembles each ASF packet's
+  single- or multi-payload body (spec §5.2.3.3) into block_align codec packets.
+  Those feed the crate's direct codec path (StreamConfig -> PacketAssembler ->
+  FrameParser -> BlockSynth). decode_all()/decode_one() mirror the dropped
+  registration::decode_packet (padding resync, timeline-preserving silence,
+  clean_pad/carry bookkeeping). Output: interleaved *stereo* int32 at native rate
+  (mono duplicated). C API: wma_sniff/open/info/read/seek/close. NOTE wma_seek
+  returns 1 on success / 0 on failure (matches dts_seek; decoders.c checks it
+  with `if (!wma_seek(...)) return 0;`). wma_open borrows the caller buffer until
+  wma_close (matches ape_open_file/dts_open).
+- ASF bugs found+fixed during bring-up: ec_data_len is ec_len_nibble bytes (not
+  +1); header-size-0 files must be walked by object count; Data Object GUID must
+  be found, not assumed at offset 0; packet size read at off+96; single-payload
+  branch must skip the stream/media/offset/replicated-data length+data; the
+  multi-payload branch rewritten per §5.2.3.3.
+- vendored/decoders/wma_ffi.h: C mirror of wma_info_t + the six functions.
+- vendored/decoders/decoders.c: new DEC_KIND_WMA. wma_open_dec() opens + caches
+  info + allocates a stereo int32 scratch; wma_fill() is a straight pcm_to_stereo
+  resample (the shim already returns stereo at native rate). Sniff + open gate in
+  dec_open() sits after the DTS gate. dec_render/dec_seek/dec_close cases added.
+- build.sh + tools/build_tools.sh: per-arch `cargo build --release --offline
+  --no-default-features` for vendored/wma, liboxideav_wma.a added to every link
+  line; new test_wma target + list entry.
+- src/FileItem.swift: "wma","asf" added to embeddedExtensions, "" removed from
+  unsupportedExtensions; playable-formats line now "... + DTS + WMA";
+  nonImplementedFormatsText now only "WMA Pro / Lossless (Windows Media)".
+- tools/fixtures/wma/: six real ASF/WMA fixtures — three stereo (twins.wma
+  61440 B, 1.37 s newscast excerpt, sparse/39%-nonzero; sample15.wma 260090 B,
+  15 s; example.wma 1245610 B, 36 s) and three mono WMAv2 44.1 kHz from
+  samplefile.com (wma_5s_sample_file_85KB.wma 5 s, wma_15s_sample_file_254KB.wma
+  15 s, wma_30s_sample_file_507KB.wma 30 s; free for any use, generated from
+  scratch).
+- tools/test_wma.c: links the shipping decoder; checks wma_sniff, dec_open,
+  stereo 44100 output, duration vs. header, decoded length, non-silence, peak in
+  (0,1], sample-accurate seek, and for the mono sources that the two output
+  channels are identical (mono->stereo duplication): 86/86. Validation is
+  plausibility-based (no local ffmpeg to produce reference PCM); peak/RMS/length/
+  non-clip counts all consistent with real content (twins: peak .43 rms .037;
+  sample15: rms .23 with genuine hard-clip; example: peak .71 rms .029; mono trio:
+  peak .071 rms .043-.049). twins' header play-duration is stale (truncated
+  excerpt) so only its decoded length is asserted.
+- [x] Universal app rebuild (x86_64 + arm64) clean at 12M; tools build clean;
+  test_wma 86/86; regression test_decoders ALL PASS, test_ape 22/22, test_dts
+  74/74, test_oggflac 652/652. NOT packaged / NOT committed yet.
+- OPEN (needs real Mac + ears): play a .wma and confirm pleasing stereo output;
+  seek mid-file; duration shown matches; and note WMA is NOT bit-exact to any
+  reference decoder (the crate lists black-box-fitted rows + unvalidated v1), so
+  treat as straightforward rather than reference-grade.
